@@ -45,6 +45,9 @@ WebSocket `ws://hôte:8123/api/websocket` : recevoir `auth_required`, envoyer `{
 - `recorder/statistics_during_period` (`statistic_ids`, `start_time`, `end_time`, `period: "day"`) → dernière somme connue (`start` en millisecondes Unix, `sum`).
 - `recorder/import_statistics` : `metadata` (`statistic_id`, `source`, `name`, `has_sum: true`, `has_mean: false`, `mean_type: 0`, `unit_class`, `unit_of_measurement`) et `stats: [{start, state, sum}]`, où `start` est minuit heure de Paris et `sum` le cumul.
 - `recorder/clear_statistics` (remise à zéro uniquement).
+- `get_config` → `time_zone` de HA : c'est le fuseau des jours (pas d'option de fuseau, voir §5).
+
+Vérifié sur HA 2026.9.4 et 2026.11.1 (`make test-ha`) : `start` est un entier en millisecondes Unix ; `period: "day"` regroupe selon le fuseau de HA ; les statistiques externes `gazpar:` et les `sensor.*` en source `recorder` sans entité sont acceptées, `m³` compris. **Les écritures sont asynchrones** : HA répond `success` avant que le recorder ait écrit ; une relecture immédiate peut renvoyer l'ancien état. La synchronisation ne relit donc jamais juste après avoir écrit.
 
 ## 3. Corrections par rapport à l'original
 
@@ -52,10 +55,11 @@ L'audit du 2026-11-16 a relevé quatre défauts de fiabilité. La réécriture l
 
 | Défaut de l'original | Comportement de ha-gazpar-rust |
 |---|---|
-| Une erreur HA fait sortir le processus après le login GRDF ; avec un redémarrage automatique, GRDF est sollicité en boucle. | La boucle attrape toutes les erreurs, les journalise et attend le prochain intervalle. Le processus ne sort que sur erreur de configuration. Délai minimal entre deux logins GRDF imposé dans le code (1 h). |
+| Une erreur HA fait sortir le processus après le login GRDF ; avec un redémarrage automatique, GRDF est sollicité en boucle. | La boucle de `run` attrape toutes les erreurs, les journalise et attend l'intervalle suivant (60 min au moins) : une erreur n'avance jamais le relevé suivant. Le processus ne sort que sur erreur de configuration, détectée avant toute connexion à GRDF. Garde interne au processus seulement (aucun état persistant, choix de l'utilisateur du 2026-11-16) : chaque démarrage, `once` ou `check` est une connexion de plus, ce que le manuel dit. |
+| Un mot de passe refusé est réessayé à chaque relevé, ce qui enchaîne les échecs d'authentification. | Si GRDF refuse les identifiants, `run` cesse toute connexion à GRDF jusqu'à son redémarrage, sans sortir, en le journalisant à chaque intervalle. |
 | `reset: true` efface les statistiques à chaque relevé. | La remise à zéro est une sous-commande ponctuelle (`ha-gazpar reset`), jamais une option persistante. |
 | Un jour sans donnée est importé à 0 et jamais rattrapé. | Les jours sans valeur ne sont pas importés. Chaque relevé redemande une fenêtre de recouvrement (14 jours par défaut) et recalcule les cumuls à partir de la somme du jour précédant la fenêtre : valeurs tardives et corrections de GRDF sont rattrapées (l'import HA remplace les points de même date). |
-| Login GRDF à chaque relevé, même inutile. | Lecture de HA d'abord ; pas de login s'il n'y a rien à demander. |
+| Lecture puis vérification immédiate dans HA. | Jamais de relecture juste après une écriture (écritures asynchrones, §2.3). |
 
 ## 4. Choix techniques
 
@@ -117,26 +121,16 @@ Quantités en entiers : les valeurs GRDF sont lues comme texte décimal et conve
 
 ## 5. Interface
 
-```
-ha-gazpar run      # démon : un relevé au démarrage puis toutes les GAZPAR_SCAN_INTERVAL minutes
-ha-gazpar once     # un seul relevé puis sortie (cron, test)
-ha-gazpar check    # valide la config, se connecte à GRDF et à HA, affiche ce qui serait importé, n'écrit rien
-ha-gazpar reset    # efface les statistiques gazpar:* puis sort
-```
+**La référence de l'interface est le manuel d'utilisation, [docs/MANUEL.md](docs/MANUEL.md)**, écrit avant l'implémentation et relu : commandes, options, règles de configuration, comportements promis. Le code s'y conforme ; toute évolution de l'interface commence par le manuel.
 
-| Variable | Défaut | Rôle |
-|---|---|---|
-| `GRDF_USERNAME`, `GRDF_PASSWORD`, `GRDF_PCE` | requis | compte Mon Espace GRDF |
-| `HA_URL` | requis | ex. `ws://192.168.0.88:8123/api/websocket` |
-| `HA_TOKEN` | requis | jeton longue durée |
-| `GAZPAR_SCAN_INTERVAL` | `480` | minutes, minimum 60 |
-| `GAZPAR_HISTORY_DAYS` | `1095` | profondeur du premier import |
-| `GAZPAR_OVERLAP_DAYS` | `14` | fenêtre de rattrapage |
-| `GAZPAR_CONSUMPTION_TYPE` | `informative` | ou `published` |
-| `GAZPAR_TIMEZONE` | `Europe/Paris` | |
-| `LOG_LEVEL` | `info` | |
+Points structurants :
 
-Chaque secret accepte une variante `…_FILE` (chemin d'un fichier), pour les secrets Docker. Aucun secret n'est jamais journalisé, quel que soit le niveau.
+- sous-commandes `run`, `once`, `check`, `reset --yes` ;
+- **trois sources de configuration** pour une seule liste d'options : paramètre de la commande, variable d'environnement, fichier `NOM=valeur` désigné par `--config` ou `GAZPAR_CONFIG`, dans cet ordre de priorité ; noms dérivés mécaniquement (`GRDF_PCE` ↔ `--grdf-pce`) ; `check` affiche la source de chaque valeur ;
+- variantes `…_FILE` (chemin absolu) pour les valeurs sensibles ; mot de passe et jeton refusés en paramètre ; l'e-mail est accepté en paramètre (donnée sensible, jamais journalisée) ;
+- options : `GRDF_USERNAME`, `GRDF_PASSWORD`, `GRDF_PCE`, `HA_URL`, `HA_TOKEN`, `GAZPAR_SCAN_INTERVAL`, `GAZPAR_HISTORY_DAYS`, `GAZPAR_OVERLAP_DAYS`, `GAZPAR_STATISTIC_PREFIX`, `GAZPAR_LOG_LEVEL` ; pas d'option de fuseau (celui de HA est lu) ni de type de relevé tant que `published` n'existe pas ;
+- `GRDF_BASE_URL` et `GRDF_LOGIN_URL` : réservées au développement, lues dans l'environnement seulement, hors manuel ;
+- une option renommée ou retirée reste acceptée avec un avertissement pendant au moins une lignée de versions.
 
 ## 6. Organisation du code
 
@@ -144,8 +138,9 @@ Chaque secret accepte une variante `…_FILE` (chemin d'un fichier), pour les se
 src/
   main.rs        lit les arguments et appelle la bibliothèque, rien d'autre
   lib.rs         déclare les modules ; toute la logique est dans la bibliothèque
-  cli.rs         sous-commandes run / once / check / reset, boucle du démon
-  config.rs      lecture et validation de l'environnement
+  cli.rs         analyse de la ligne de commande, sous-commandes, boucle du démon ; seul module qui assemble grdf, ha et sync
+  config.rs      fusion des trois sources (paramètres, environnement, fichier), provenance de chaque valeur, validation
+  config_file.rs analyse du fichier NOM=valeur (fonction pure)
   secret.rs      type Secret : Debug et Display masqués
   error.rs       enum Error
   log.rs         journal horodaté sur stderr
@@ -203,7 +198,7 @@ Aucune dépendance de test : `#[test]` standard, faux serveurs écrits avec `std
 
 | Module | Testé par des tests unitaires |
 |---|---|
-| `config` | variables manquantes, valeurs invalides, variantes `_FILE`, bornes (`SCAN_INTERVAL` < 60 refusé), absence de secret dans l'affichage `Debug` |
+| `config`, `config_file` | priorité des trois sources, option et variante `_FILE` dans des sources différentes, valeurs vides, grammaire du fichier (BOM, CRLF, guillemets, `#`, `export`, clé inconnue ou répétée), messages d'erreur sans valeur, provenance affichée par `check`, bornes, absence de secret dans `Debug` |
 | `grdf/http` | bocal à cookies : domaine, chemin, remplacement, expiration ; suivi des redirections ; limite de sauts |
 | `grdf/auth` | extraction de `stateToken` (dont `\x2D`), construction des charges utiles, lecture de `stateHandle` et `success.href`, messages d'erreur Okta, absence du jeton dans les erreurs |
 | `grdf/api` | construction des URL, détection de session expirée, calcul des délais de reprise, `Retry-After`, réponse `[]` |
@@ -281,7 +276,7 @@ Chaque étape se termine par un critère vérifiable.
 
 5. **Synchronisation.** `sync.rs` : premier import, relevés suivants, fenêtre de recouvrement, erreurs non fatales, délai minimal entre logins. *Critère : `once` lancé deux fois de suite n'ajoute aucun point et ne change aucune somme ; un jour vide rempli plus tard dans le jeu d'essai est bien rattrapé.*
 
-6. **Image et déploiement.** `Dockerfile` multi-étapes vers `FROM scratch`, compilation croisée arm64 (`cargo-zigbuild` ou `cross`), `release.yml` et première publication `2026.9.0` (§9, §10), sous-commande ou drapeau de contrôle de santé. Remplacement du service `gazpar2haws` dans `~/homeassistant/compose.yml` (mêmes durcissements : `read_only`, `cap_drop: ALL`, utilisateur non root). *Critère : taille de l'image et mémoire résidente mesurées et notées dans le README ; historique de 3 ans visible dans le tableau de bord Énergie.*
+6. **Image et déploiement.** `Dockerfile` multi-étapes vers `FROM scratch`, compilation croisée arm64 (`cargo-zigbuild` ou `cross`), `release.yml` et première publication `2026.9.0` (§9, §10). Pas de contrôle de santé : sans état partagé (système de fichiers en lecture seule), une commande lancée à part ne peut rien savoir du démon. Remplacement du service `gazpar2haws` dans `~/homeassistant/compose.yml` (mêmes durcissements : `read_only`, `cap_drop: ALL`, utilisateur non root). *Critère : taille de l'image et mémoire résidente mesurées et notées dans le README ; historique de 3 ans visible dans le tableau de bord Énergie.*
 
 7. **Options, selon besoin.**
    - Type `published` : répartition d'une période sur ses jours (volume réparti également, énergie au prorata, arrondis qui retombent exactement sur les totaux) et reconstruction des trous à partir des index.
