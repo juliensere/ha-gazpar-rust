@@ -16,7 +16,9 @@
 //! - `run` : boucle de [`crate::daemon`], un relevé par intervalle.
 //!
 //! Journal (MANUEL.md §7) : lignes horodatées sur la sortie d'erreur
-//! injectée, au seuil de `GAZPAR_LOG_LEVEL`.
+//! injectée, au seuil de `GAZPAR_LOG_LEVEL`. Les détails journalisés par
+//! `grdf` et `ha` (macros de [`crate::log`]) vont, eux, directement sur la
+//! sortie d'erreur du processus, au même format.
 //!
 //! Codes de sortie : 0 succès, 1 erreur d'exécution (GRDF ou Home
 //! Assistant injoignable ou en refus), 2 configuration ou ligne de commande
@@ -250,19 +252,16 @@ impl daemon::Host for DaemonHost<'_, '_> {
     }
 }
 
-/// Journal sur la sortie d'erreur injectée, au format de [`crate::log`].
+/// Journal sur la sortie d'erreur injectée, par le chemin d'écriture unique
+/// de [`crate::log`] ([`crate::log::write_to`]). Les macros de journal des
+/// autres modules, elles, écrivent sur la vraie sortie d'erreur.
 struct Journal<'w> {
     sink: &'w mut dyn Write,
 }
 
 impl Journal<'_> {
     fn log(&mut self, level: Level, message: &str) {
-        if crate::log::enabled(level) {
-            let line =
-                crate::log::format_line(jiff::Timestamp::now(), level, format_args!("{message}"));
-            // Une erreur d'écriture du journal n'a nulle part où être signalée.
-            let _ = writeln!(self.sink, "{line}");
-        }
+        crate::log::write_to(self.sink, level, format_args!("{message}"));
     }
 }
 

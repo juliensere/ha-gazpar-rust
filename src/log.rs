@@ -5,6 +5,17 @@
 //! démarrage par [`init`] ; `warn!` et `error!` sont toujours écrits.
 //! Pas de fichier : Docker conserve la sortie d'erreur.
 //!
+//! Un seul chemin d'écriture, [`write_to`] (filtrage par niveau, horodatage,
+//! mise en forme), emprunté par deux portes :
+//!
+//! - les macros `error!`, `warn!`, `info!`, `debug!` écrivent **toujours sur
+//!   la vraie sortie d'erreur du processus** ([`std::io::stderr`]) : c'est
+//!   ainsi que `grdf` et `ha` journalisent leurs détails (reprises, session
+//!   expirée, commandes lues), même quand `cli` travaille sur une sortie
+//!   injectée (tests) ;
+//! - le journal de `cli` écrit sur la sortie d'erreur qu'on lui donne, par
+//!   [`write_to`], au même format.
+//!
 //! Ne jamais passer de secret en clair à ces macros : les secrets sont des
 //! [`crate::secret::Secret`], qui s'affichent `***`.
 //!
@@ -73,17 +84,24 @@ pub fn enabled(level: Level) -> bool {
 }
 
 /// Met en forme une ligne de journal (fonction pure, testée).
-pub fn format_line(now: jiff::Timestamp, level: Level, args: fmt::Arguments<'_>) -> String {
+fn format_line(now: jiff::Timestamp, level: Level, args: fmt::Arguments<'_>) -> String {
     format!("{now:.0} {} {args}", level.label())
 }
 
-/// Écrit une ligne si le niveau est actif. Utiliser plutôt les macros.
-pub fn write(level: Level, args: fmt::Arguments<'_>) {
+/// Écrit une ligne sur `sink` si le niveau est actif : seul chemin
+/// d'écriture du journal.
+pub fn write_to(sink: &mut dyn Write, level: Level, args: fmt::Arguments<'_>) {
     if enabled(level) {
         let line = format_line(jiff::Timestamp::now(), level, args);
-        // Une erreur d'écriture sur stderr n'a nulle part où être signalée.
-        let _ = writeln!(std::io::stderr().lock(), "{line}");
+        // Une erreur d'écriture du journal n'a nulle part où être signalée.
+        let _ = writeln!(sink, "{line}");
     }
+}
+
+/// Écrit une ligne sur la sortie d'erreur du processus si le niveau est
+/// actif. Utiliser plutôt les macros.
+pub fn write(level: Level, args: fmt::Arguments<'_>) {
+    write_to(&mut std::io::stderr().lock(), level, args);
 }
 
 /// Journalise une erreur (toujours écrite).
@@ -165,6 +183,25 @@ mod tests {
         // Sans init() dans ce test, le niveau par défaut est au moins info.
         assert!(enabled(Level::Error));
         assert!(enabled(Level::Info));
+    }
+
+    #[test]
+    fn write_to_uses_the_line_format() {
+        let mut sink = Vec::new();
+        write_to(
+            &mut sink,
+            Level::Error,
+            format_args!("relevé : {}", "échec"),
+        );
+        write_to(&mut sink, Level::Warn, format_args!("deux"));
+        let text = String::from_utf8(sink).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        let (stamp, rest) = lines[0].split_once(' ').unwrap();
+        assert!(stamp.parse::<jiff::Timestamp>().is_ok(), "{stamp}");
+        assert!(stamp.ends_with('Z') && !stamp.contains('.'), "{stamp}");
+        assert_eq!(rest, "ERREUR relevé : échec");
+        assert!(lines[1].ends_with(" ATTENTION deux"), "{text}");
     }
 
     #[test]

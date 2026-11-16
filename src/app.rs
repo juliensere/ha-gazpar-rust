@@ -15,7 +15,10 @@
 //! la première demande de relevés, donc jamais si Home Assistant est
 //! injoignable).
 //!
-//! Rien n'est journalisé ni affiché ici : `cli` met en forme.
+//! Ce module n'écrit rien lui-même : `cli` met en forme et journalise ce
+//! qu'il rend. Les clients qu'il construit journalisent en revanche leurs
+//! détails (reprises GRDF, session expirée, commandes de Home Assistant) par
+//! les macros de [`crate::log`], directement sur la sortie d'erreur.
 //!
 //! Dépendances : `config`, `sync`, `ports`, `domain`, `grdf`, `ha`,
 //! `secret`, `error`, `jiff`. `grdf` et `ha` ne se connaissent pas : ils ne
