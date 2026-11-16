@@ -20,3 +20,4 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/). Les numéros 
 - Intégration continue GitHub Actions : `make check` à chaque push et pull request, compilation statique x86_64 avec taille du binaire, vérification hebdomadaire des avis de sécurité ; Dependabot limité aux mises à jour de sécurité.
 - Lecture des relevés informatifs de GRDF : un relevé par jour gazier, valeurs exactes au millième, jour sans donnée conservé sans valeur (jamais 0), relevé invalide ignoré avec un avertissement. Jeux d'essai repris de PyGazpar.
 - `GAZPAR_CONSUMPTION_TYPE=published` refusé avec un message explicite : les relevés publiés ne sont pas encore pris en charge.
+- Client HTTP vers GRDF : bocal à cookies maison (domaine, chemin, expiration, `Secure`), redirections suivies à la main avec cookies captés à chaque saut, délais de 10 s (connexion) et 60 s (lecture), taille des réponses bornée ; aucune adresse complète, aucun cookie dans les journaux et les erreurs.
