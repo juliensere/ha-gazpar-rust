@@ -350,8 +350,11 @@ impl FromStr for StatisticId {
     }
 }
 
-/// Point de statistique quotidien : consommation du jour (`state`) et cumul
-/// depuis l'origine (`sum`).
+/// Point de statistique quotidien : `sum` est le cumul depuis l'origine.
+///
+/// `sync` écrit `state = sum` (un compteur, comme gazpar2haws) et ne lit
+/// jamais `state` : la consommation d'un jour est la différence de `sum`
+/// avec le point précédent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatPoint {
     pub day: Date,
