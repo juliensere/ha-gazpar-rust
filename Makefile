@@ -99,8 +99,11 @@ ha-up: ## Home Assistant jetable sur 127.0.0.1:8124 (utilisateur et jeton de tes
 ha-down: ## Arrête et supprime le Home Assistant jetable
 	@scripts/ha-test.sh down
 
-test-ha: ## Essais contre le Home Assistant jetable (itération ultérieure)
-	@echo "make $@ : itération ultérieure (étape 2, HA $(HA_TAG))"
+test-ha: ha-up ## Essais réels contre le Home Assistant jetable
+	HA_TEST_URL=ws://127.0.0.1:$(HA_PORT)/api/websocket \
+	HA_TEST_TOKEN_FILE=$(HA_TEST_DIR)/token \
+	HA_TEST_TAG=$(HA_TAG) \
+	$(CARGO) test --locked --test ha_real -- --ignored --test-threads=1
 
 dev: ## Chaîne complète contre faux GRDF et HA jetable (itération ultérieure)
 	@echo "make $@ : itération ultérieure (étapes 2 à 5)"
