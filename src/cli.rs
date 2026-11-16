@@ -15,7 +15,7 @@
 use std::ffi::OsString;
 use std::io::Write;
 
-use crate::config::Config;
+use crate::config::{self, CommandLine, Config, Loaded};
 use crate::error::Error;
 use crate::{HA_REFERENCE, VERSION};
 
@@ -80,7 +80,7 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, E
 pub fn main(args: impl IntoIterator<Item = OsString>) -> i32 {
     run(
         args,
-        Config::from_env,
+        || config::load_from_process(&CommandLine::default()),
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
     )
@@ -90,11 +90,11 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> i32 {
 /// injectées (testable sans environnement ni terminal).
 pub fn run(
     args: impl IntoIterator<Item = OsString>,
-    load_config: impl FnOnce() -> Result<Config, Error>,
+    load_config: impl FnOnce() -> Loaded,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    let result = parse_args(args).and_then(|command| execute(command, load_config, out));
+    let result = parse_args(args).and_then(|command| execute(command, load_config, out, err));
     match result {
         Ok(()) => 0,
         Err(e) => {
@@ -110,8 +110,9 @@ pub fn run(
 
 fn execute(
     command: Command,
-    load_config: impl FnOnce() -> Result<Config, Error>,
+    load_config: impl FnOnce() -> Loaded,
     out: &mut dyn Write,
+    err: &mut dyn Write,
 ) -> Result<(), Error> {
     match command {
         Command::Help => {
@@ -128,12 +129,12 @@ fn execute(
         Command::Run | Command::Once | Command::Check | Command::Reset => {}
     }
 
-    let config = load_config()?;
+    let config = load(load_config, err)?;
     crate::log::init(config.log_level);
     match command {
         Command::Check => {
             writeln!(out, "Configuration valide.")?;
-            write!(out, "{}", config.summary())?;
+            write!(out, "{}", config.report())?;
             writeln!(
                 out,
                 "Connexions à GRDF et à Home Assistant : pas encore vérifiées (itération ultérieure)."
@@ -153,6 +154,22 @@ fn execute(
     }
 }
 
+/// Charge la configuration et journalise ses avertissements sur `err`, même
+/// si elle est refusée : ils expliquent souvent l'erreur (faute de frappe
+/// dans un nom de variable).
+fn load(load_config: impl FnOnce() -> Loaded, err: &mut dyn Write) -> Result<Config, Error> {
+    let loaded = load_config();
+    for warning in &loaded.warnings {
+        let line = crate::log::format_line(
+            jiff::Timestamp::now(),
+            crate::log::Level::Warn,
+            format_args!("{warning}"),
+        );
+        writeln!(err, "{line}")?;
+    }
+    loaded.config
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,8 +178,8 @@ mod tests {
         list.iter().map(OsString::from).collect()
     }
 
-    fn valid_config() -> Result<Config, Error> {
-        let vars: std::collections::HashMap<&str, &str> = [
+    fn valid_config() -> Loaded {
+        let env: std::collections::BTreeMap<String, String> = [
             ("GRDF_USERNAME", "jean@example.org"),
             ("GRDF_PASSWORD", "mot-de-passe-secret"),
             ("GRDF_PCE", "12345678901234"),
@@ -170,19 +187,28 @@ mod tests {
             ("HA_TOKEN", "jeton-secret"),
         ]
         .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
-        Config::from_lookup(
-            |k| vars.get(k).map(|v| (*v).to_owned()),
-            |_| Err(std::io::ErrorKind::NotFound.into()),
-        )
+        config::load(&CommandLine::default(), &env, &NoFiles)
     }
 
-    fn incomplete_config() -> Result<Config, Error> {
-        Config::from_lookup(|_| None, |_| Err(std::io::ErrorKind::NotFound.into()))
+    fn incomplete_config() -> Loaded {
+        config::load(&CommandLine::default(), &Default::default(), &NoFiles)
+    }
+
+    struct NoFiles;
+
+    impl config::FileSystem for NoFiles {
+        fn read_to_string(&self, _: &str) -> std::io::Result<String> {
+            Err(std::io::ErrorKind::NotFound.into())
+        }
+        fn mode(&self, _: &str) -> std::io::Result<Option<u32>> {
+            Err(std::io::ErrorKind::NotFound.into())
+        }
     }
 
     /// Lance la ligne de commande ; renvoie (code, stdout, stderr).
-    fn launch(list: &[&str], config: fn() -> Result<Config, Error>) -> (i32, String, String) {
+    fn launch(list: &[&str], config: fn() -> Loaded) -> (i32, String, String) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = run(args(list), config, &mut out, &mut err);
         (
