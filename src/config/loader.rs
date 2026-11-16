@@ -1,230 +1,29 @@
-//! Configuration : fusion des trois sources, provenance de chaque valeur et
-//! validation (MANUEL.md §4, PLAN.md §5).
-//!
-//! Priorité, de la plus forte à la plus faible : paramètre de la commande,
-//! variable d'environnement, fichier `NOM=valeur` (désigné par `--config` ou
-//! `GAZPAR_CONFIG`), valeur par défaut. Une seule table, [`OPTIONS`], décrit
-//! les options : les clés du fichier sont les noms des variables, les
-//! paramètres s'en déduisent ([`parameter`] : `GRDF_PCE` ↔ `--grdf-pce`).
-//!
-//! Règles (MANUEL.md §4.3) :
-//! - une option et sa variante `…_FILE` sont une seule option : la source la
-//!   plus forte qui donne l'une des deux formes l'emporte entièrement, et la
-//!   variante `_FILE` d'une source écartée n'est pas lue ; les deux formes
-//!   dans une même source sont une erreur, même si cette source est écartée ;
-//! - une valeur vide dans le fichier ou l'environnement compte comme absente
-//!   (un paramètre vide est refusé plus tôt, par `cli`) ;
-//! - les chemins `…_FILE` sont absolus ; l'espace final du contenu est
-//!   retiré ;
-//! - `HA_URL` et les adresses de développement sont analysées par
-//!   [`crate::url`], le même analyseur que celui des connexions : une adresse
-//!   acceptée ici ne peut pas être refusée à la connexion ;
-//! - `GRDF_BASE_URL` et `GRDF_LOGIN_URL` (développement) ne sont lues que dans
-//!   l'environnement, et seulement vers `localhost` ou `127.0.0.1` ;
-//! - tous les problèmes sont relevés d'un coup dans une seule
-//!   [`Error::Config`] ; les avertissements (variable inconnue, fichier
-//!   lisible par d'autres) sont **renvoyés** dans [`Loaded::warnings`], même
-//!   en cas d'erreur, et c'est `cli` qui les journalise.
-//!
-//! Aucun message, avertissement ni affichage ne contient de valeur d'option :
-//! seulement des noms, des chemins de fichiers et des nombres. L'e-mail, le
-//! mot de passe et le jeton sont des [`Secret`], affichés `***` par
-//! [`Config::report`]. Le PCE n'est pas un secret : il figure dans les
-//! identifiants de statistiques.
+//! Chargement de la configuration : fusion des trois sources (paramètre,
+//! environnement, fichier `NOM=valeur`), provenance de chaque valeur,
+//! variantes `…_FILE`, avertissements, puis validation par
+//! [`super::validate`] et construction de la [`Config`].
 //!
 //! Les entrées-sorties sont injectées : [`load`] reçoit l'environnement sous
 //! forme de table et l'accès aux fichiers par le trait [`FileSystem`] ;
 //! [`load_from_process`] les branche sur la bibliothèque standard.
 //!
-//! Dépendances : `config_file`, `domain`, `secret`, `url`, `log` (type
-//! `Level`), `error`.
+//! Dépendances : `config::options`, `config::validate`, `config_file`,
+//! `secret`, `error`.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::path::Path;
 
+use super::options::{DEV_VARIABLES, OPTIONS, OptionSpec, WATCHED_PREFIXES, file_keys, parameter};
+use super::validate::{
+    check_ha_url, check_log_level, check_pce, check_statistic_prefix, check_username, local_url,
+    parse_number,
+};
+use super::{Config, DEFAULT_GRDF_BASE_URL, DEFAULT_GRDF_LOGIN_URL, Setting};
 use crate::config_file::{self, CONFIG_VARIABLE, Entry};
-use crate::domain::{Measure, StatisticId};
 use crate::error::Error;
-use crate::log::Level;
 use crate::secret::Secret;
-use crate::url::{InvalidUrl, Url};
-
-/// Adresse de Mon Espace GRDF.
-pub const DEFAULT_GRDF_BASE_URL: &str = "https://monespace.grdf.fr";
-/// Adresse du service de connexion de GRDF.
-pub const DEFAULT_GRDF_LOGIN_URL: &str = "https://connexion.grdf.fr";
-/// Variables réservées au développement, lues dans l'environnement seulement.
-pub const DEV_VARIABLES: [&str; 2] = ["GRDF_BASE_URL", "GRDF_LOGIN_URL"];
-/// Chemin de l'API WebSocket de Home Assistant, ajouté à `HA_URL` s'il manque.
-pub const HA_WEBSOCKET_PATH: &str = "/api/websocket";
-
-/// Préfixes des variables d'environnement surveillées : une variable inconnue
-/// qui commence ainsi est probablement une faute de frappe.
-const WATCHED_PREFIXES: [&str; 2] = ["GAZPAR_", "GRDF_"];
-
-/// Une option de configuration (MANUEL.md §4.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OptionSpec {
-    /// Nom de la variable d'environnement et de la clé du fichier.
-    pub name: &'static str,
-    /// Variante `…_FILE` (valeur lue dans un fichier), s'il y en a une.
-    pub file_variant: Option<&'static str>,
-    /// Valeur masquée (`***`) dans le tableau de `check`.
-    pub secret: bool,
-    /// La forme simple est-elle acceptée en paramètre ? Non pour le mot de
-    /// passe et le jeton (visibles dans `ps`) ; la variante `_FILE` l'est
-    /// toujours.
-    pub on_command_line: bool,
-    /// Valeur par défaut ; `None` pour une option obligatoire.
-    pub default: Option<&'static str>,
-    /// Rôle, pour l'aide.
-    pub help: &'static str,
-}
-
-/// Les options, dans l'ordre du manuel (§4.2).
-pub const OPTIONS: [OptionSpec; 10] = [
-    OptionSpec {
-        name: "GRDF_USERNAME",
-        file_variant: Some("GRDF_USERNAME_FILE"),
-        secret: true,
-        on_command_line: true,
-        default: None,
-        help: "e-mail du compte Mon Espace GRDF",
-    },
-    OptionSpec {
-        name: "GRDF_PASSWORD",
-        file_variant: Some("GRDF_PASSWORD_FILE"),
-        secret: true,
-        on_command_line: false,
-        default: None,
-        help: "mot de passe Mon Espace GRDF",
-    },
-    OptionSpec {
-        name: "GRDF_PCE",
-        file_variant: Some("GRDF_PCE_FILE"),
-        secret: false,
-        on_command_line: true,
-        default: None,
-        help: "PCE du compteur, 14 chiffres",
-    },
-    OptionSpec {
-        name: "HA_URL",
-        file_variant: None,
-        secret: false,
-        on_command_line: true,
-        default: None,
-        help: "adresse de Home Assistant, ws://hôte:port",
-    },
-    OptionSpec {
-        name: "HA_TOKEN",
-        file_variant: Some("HA_TOKEN_FILE"),
-        secret: true,
-        on_command_line: false,
-        default: None,
-        help: "jeton d'accès longue durée",
-    },
-    OptionSpec {
-        name: "GAZPAR_SCAN_INTERVAL",
-        file_variant: None,
-        secret: false,
-        on_command_line: true,
-        default: Some("480"),
-        help: "minutes entre deux relevés en mode run, 60 au minimum",
-    },
-    OptionSpec {
-        name: "GAZPAR_HISTORY_DAYS",
-        file_variant: None,
-        secret: false,
-        on_command_line: true,
-        default: Some("1095"),
-        help: "jours d'historique demandés au premier import (1 à 3650)",
-    },
-    OptionSpec {
-        name: "GAZPAR_OVERLAP_DAYS",
-        file_variant: None,
-        secret: false,
-        on_command_line: true,
-        default: Some("14"),
-        help: "jours déjà importés relus à chaque relevé (1 à 60)",
-    },
-    OptionSpec {
-        name: "GAZPAR_STATISTIC_PREFIX",
-        file_variant: None,
-        secret: false,
-        on_command_line: true,
-        default: Some("gazpar"),
-        help: "préfixe des statistiques",
-    },
-    OptionSpec {
-        name: "GAZPAR_LOG_LEVEL",
-        file_variant: None,
-        secret: false,
-        on_command_line: true,
-        default: Some("info"),
-        help: "info ou debug",
-    },
-];
-
-/// Nom du paramètre d'une variable : minuscules, `_` remplacé par `-`
-/// (`GRDF_PCE` → `--grdf-pce`).
-pub fn parameter(variable: &str) -> String {
-    let mut p = String::with_capacity(variable.len() + 2);
-    p.push_str("--");
-    p.extend(variable.chars().map(|c| {
-        if c == '_' {
-            '-'
-        } else {
-            c.to_ascii_lowercase()
-        }
-    }));
-    p
-}
-
-/// Ce que désigne un paramètre de configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ParameterTarget {
-    /// Paramètre accepté : nom de la variable correspondante.
-    Accepted(&'static str),
-    /// Mot de passe ou jeton en paramètre, refusé : nom de la variable et
-    /// paramètre à utiliser à la place (`--…-file`).
-    Refused {
-        variable: &'static str,
-        instead: String,
-    },
-}
-
-/// Tous les paramètres de configuration, acceptés ou refusés, avec ce qu'ils
-/// désignent.
-pub fn parameters() -> Vec<(String, ParameterTarget)> {
-    let mut list = Vec::new();
-    for spec in &OPTIONS {
-        let target = match (spec.on_command_line, spec.file_variant) {
-            (true, _) => ParameterTarget::Accepted(spec.name),
-            (false, Some(variant)) => ParameterTarget::Refused {
-                variable: spec.name,
-                instead: parameter(variant),
-            },
-            // Une option sans variante doit être acceptée en paramètre ;
-            // vérifié par le test `table_is_consistent`.
-            (false, None) => continue,
-        };
-        list.push((parameter(spec.name), target));
-        if let Some(variant) = spec.file_variant {
-            list.push((parameter(variant), ParameterTarget::Accepted(variant)));
-        }
-    }
-    list
-}
-
-/// Noms acceptés dans le fichier : chaque option et sa variante `_FILE`.
-pub fn file_keys() -> Vec<&'static str> {
-    OPTIONS
-        .iter()
-        .flat_map(|s| std::iter::once(s.name).chain(s.file_variant))
-        .collect()
-}
 
 /// Ce que la ligne de commande apporte à la configuration.
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -332,100 +131,6 @@ impl fmt::Display for Origin {
                 }
             },
         }
-    }
-}
-
-/// Une ligne du tableau de `check` : valeur retenue (masquée si secrète) et
-/// provenance.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Setting {
-    pub name: &'static str,
-    /// Valeur affichée : `***` pour un secret, forme normalisée sinon.
-    pub shown: String,
-    pub origin: Origin,
-}
-
-/// Configuration validée.
-///
-/// `Debug` ne montre aucun secret (voir le test `debug_shows_no_secret`).
-#[derive(Debug)]
-pub struct Config {
-    /// E-mail du compte Mon Espace GRDF.
-    pub grdf_username: Secret,
-    pub grdf_password: Secret,
-    /// Point de comptage et d'estimation : 14 chiffres.
-    pub pce: String,
-    /// URL WebSocket de Home Assistant, `ws://…`, chemin `/api/websocket`
-    /// ajouté s'il manquait.
-    pub ha_url: String,
-    pub ha_token: Secret,
-    /// Intervalle entre deux relevés, en minutes (≥ 60).
-    pub scan_interval_minutes: u32,
-    /// Profondeur du premier import, en jours.
-    pub history_days: u32,
-    /// Fenêtre de rattrapage, en jours.
-    pub overlap_days: u32,
-    pub log_level: Level,
-    pub energy_statistic: StatisticId,
-    pub volume_statistic: StatisticId,
-    /// Adresse de Mon Espace GRDF (surchargeable vers `localhost` seulement).
-    pub grdf_base_url: String,
-    /// Adresse de connexion GRDF (surchargeable vers `localhost` seulement).
-    pub grdf_login_url: String,
-    /// Fichier de configuration lu et source de son chemin (`--config` ou
-    /// `GAZPAR_CONFIG`).
-    pub config_file: Option<(String, Source)>,
-    /// Valeur retenue et provenance de chaque option, pour `check`.
-    pub settings: Vec<Setting>,
-}
-
-impl Config {
-    /// Identifiant de statistique d'une mesure.
-    pub fn statistic_id(&self, measure: Measure) -> &StatisticId {
-        match measure {
-            Measure::Energy => &self.energy_statistic,
-            Measure::Volume => &self.volume_statistic,
-        }
-    }
-
-    /// Configuration retenue, sans aucun secret (commande `check`) : le
-    /// fichier lu, puis une ligne par option au format du manuel (§4.1),
-    /// puis les statistiques.
-    pub fn report(&self) -> String {
-        let mut s = String::new();
-        // `write!` sur une String ne peut pas échouer.
-        match &self.config_file {
-            None => {
-                let _ = writeln!(s, "Fichier de configuration : aucun");
-            }
-            Some((path, Source::Environment)) => {
-                let _ = writeln!(
-                    s,
-                    "Fichier de configuration : {path} (environnement, {CONFIG_VARIABLE})"
-                );
-            }
-            Some((path, source)) => {
-                let _ = writeln!(s, "Fichier de configuration : {path} ({source})");
-            }
-        }
-        let _ = writeln!(s);
-        let rows: Vec<(&str, &str, String)> = self
-            .settings
-            .iter()
-            .map(|r| (r.name, r.shown.as_str(), r.origin.to_string()))
-            .collect();
-        let name_width = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0) + 2;
-        let value_width = rows.iter().map(|r| r.1.chars().count()).max().unwrap_or(0) + 3;
-        for (name, shown, origin) in rows {
-            let _ = writeln!(s, "{name:<name_width$}{shown:<value_width$}({origin})");
-        }
-        let _ = writeln!(s);
-        let ids: Vec<String> = Measure::ALL
-            .iter()
-            .map(|m| format!("{} ({})", self.statistic_id(*m), m.unit()))
-            .collect();
-        let _ = writeln!(s, "Statistiques : {}", ids.join(", "));
-        s
     }
 }
 
@@ -777,11 +482,7 @@ impl Loader<'_> {
         let prefix = take("GAZPAR_STATISTIC_PREFIX");
         let level = take("GAZPAR_LOG_LEVEL");
 
-        let username = self.check(username, "GRDF_USERNAME", |v| {
-            v.contains('@')
-                .then(|| v.to_owned())
-                .ok_or_else(|| "une adresse e-mail est attendue (pas de « @ »)".to_owned())
-        });
+        let username = self.check(username, "GRDF_USERNAME", check_username);
         let password = self.check(password, "GRDF_PASSWORD", |v| Ok(v.to_owned()));
         let pce = self.check(pce, "GRDF_PCE", check_pce);
         let ha_url = self.check(ha_url, "HA_URL", check_ha_url);
@@ -795,18 +496,11 @@ impl Loader<'_> {
         let overlap = self.check(overlap, "GAZPAR_OVERLAP_DAYS", |v| {
             parse_number(v, 1, 60, "jours")
         });
-        let level = self.check(level, "GAZPAR_LOG_LEVEL", |v| {
-            Level::parse(v).ok_or_else(|| "« info » ou « debug » attendu".to_owned())
-        });
+        let level = self.check(level, "GAZPAR_LOG_LEVEL", check_log_level);
         // Le préfixe est validé même si le PCE est faux, avec un PCE fictif.
         let pce_for_ids = pce.as_ref().map_or("00000000000000", |(p, _)| p.as_str());
         let ids = self.check(prefix, "GAZPAR_STATISTIC_PREFIX", |v| {
-            match Measure::ALL.map(|m| StatisticId::for_measure(v, pce_for_ids, m)) {
-                [Ok(energy), Ok(volume)] => Ok((v.to_owned(), energy, volume)),
-                _ => Err("préfixe invalide (minuscules, chiffres et _, ex. gazpar, \
-                          ou sensor.<nom> pour reprendre des statistiques d'entité)"
-                    .to_owned()),
-            }
+            check_statistic_prefix(v, pce_for_ids)
         });
         let grdf_base_url = self.dev_url("GRDF_BASE_URL", DEFAULT_GRDF_BASE_URL, &mut settings);
         let grdf_login_url = self.dev_url("GRDF_LOGIN_URL", DEFAULT_GRDF_LOGIN_URL, &mut settings);
@@ -944,111 +638,41 @@ fn describe_io(e: &std::io::Error) -> String {
     }
 }
 
-/// PCE : exactement 14 chiffres.
-fn check_pce(pce: &str) -> Result<String, String> {
-    if pce.len() == 14 && pce.bytes().all(|b| b.is_ascii_digit()) {
-        return Ok(pce.to_owned());
-    }
-    let count = pce.chars().count();
-    Err(if count == 14 {
-        "14 chiffres attendus (caractère non numérique présent)".to_owned()
-    } else {
-        format!("14 chiffres attendus ({count} caractères reçus)")
-    })
-}
-
-/// Entier borné. Le message ne recopie pas la valeur reçue.
-fn parse_number(raw: &str, min: u32, max: u32, unit: &str) -> Result<u32, String> {
-    let bounds = if max == u32::MAX {
-        format!("au moins {min}")
-    } else {
-        format!("entre {min} et {max}")
-    };
-    match raw.trim().parse::<u32>() {
-        Ok(n) if (min..=max).contains(&n) => Ok(n),
-        Ok(n) => Err(format!("{n} {unit} hors limites ({bounds})")),
-        Err(_) => Err(format!("nombre entier de {unit} attendu ({bounds})")),
-    }
-}
-
-/// Exemple d'adresse de Home Assistant, cité dans les messages.
-const HA_URL_EXAMPLE: &str = "ex. ws://192.168.1.10:8123";
-
-/// Valide l'URL Home Assistant avec l'analyseur de connexion
-/// ([`Url::ws`]) et ajoute `/api/websocket` si elle n'a pas de chemin.
-/// Requête (`?`) et fragment (`#`) sont refusés : l'API WebSocket de HA n'en
-/// a pas l'usage. Rend la forme normalisée (schéma et hôte en minuscules).
-fn check_ha_url(text: &str) -> Result<String, String> {
-    if text
-        .get(..6)
-        .is_some_and(|head| head.eq_ignore_ascii_case("wss://"))
-    {
-        return Err(format!(
-            "wss:// (WebSocket chiffré) n'est pas pris en charge ; utiliser ws:// vers \
-             Home Assistant sur le réseau local, {HA_URL_EXAMPLE}"
-        ));
-    }
-    let url = Url::ws(text).map_err(|e| match e {
-        InvalidUrl::Scheme(_) => format!("doit commencer par ws://, {HA_URL_EXAMPLE}"),
-        InvalidUrl::Credentials => {
-            "identifiants dans l'URL non pris en charge (utiliser HA_TOKEN)".to_owned()
-        }
-        other => format!("adresse invalide : {other} ({HA_URL_EXAMPLE})"),
-    })?;
-    if text.contains(['?', '#']) {
-        return Err(format!(
-            "requête (?) et fragment (#) non pris en charge ({HA_URL_EXAMPLE})"
-        ));
-    }
-    Ok(if url.path() == "/" {
-        format!("{}{HA_WEBSOCKET_PATH}", url.origin())
-    } else {
-        url.full()
-    })
-}
-
-/// Adresse de développement analysée par [`Url::http`], vers `localhost`
-/// ou `127.0.0.1` seulement, sans requête ni fragment ; `None` sinon. Rend
-/// la forme normalisée, sans `/` final.
-fn local_url(text: &str) -> Option<String> {
-    let url = Url::http(text).ok()?;
-    let local = matches!(url.host(), "localhost" | "127.0.0.1");
-    (local && !text.contains(['?', '#'])).then(|| url.full().trim_end_matches('/').to_owned())
-}
-
+/// Outils des tests de `config` : faux système de fichiers, environnement
+/// minimal valide, lecture du résultat.
 #[cfg(test)]
-mod tests {
+pub(super) mod testing {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
 
-    const PASSWORD: &str = "P@ssw0rd-tres-secret";
-    const TOKEN: &str = "eyJhbGciOiJIUzI1NiJ9.jeton-tres-secret";
-    const EMAIL: &str = "jean.dupont@example.org";
-    const CONF: &str = "/etc/ha-gazpar/ha-gazpar.conf";
+    pub(crate) const PASSWORD: &str = "P@ssw0rd-tres-secret";
+    pub(crate) const TOKEN: &str = "eyJhbGciOiJIUzI1NiJ9.jeton-tres-secret";
+    pub(crate) const EMAIL: &str = "jean.dupont@example.org";
+    pub(crate) const CONF: &str = "/etc/ha-gazpar/ha-gazpar.conf";
 
     /// Faux système de fichiers : contenu et droits par chemin, lectures
     /// enregistrées.
     #[derive(Default)]
-    struct Fs {
+    pub(crate) struct Fs {
         files: HashMap<String, (String, u32)>,
-        reads: RefCell<Vec<String>>,
+        pub(crate) reads: RefCell<Vec<String>>,
     }
 
     impl Fs {
-        fn with(mut self, path: &str, content: &str) -> Fs {
+        pub(crate) fn with(mut self, path: &str, content: &str) -> Fs {
             self.files
                 .insert(path.to_owned(), (content.to_owned(), 0o600));
             self
         }
 
-        fn with_mode(mut self, path: &str, content: &str, mode: u32) -> Fs {
+        pub(crate) fn with_mode(mut self, path: &str, content: &str, mode: u32) -> Fs {
             self.files
                 .insert(path.to_owned(), (content.to_owned(), mode));
             self
         }
 
-        fn was_read(&self, path: &str) -> bool {
+        pub(crate) fn was_read(&self, path: &str) -> bool {
             self.reads.borrow().iter().any(|p| p == path)
         }
     }
@@ -1070,14 +694,14 @@ mod tests {
         }
     }
 
-    fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pub(crate) fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect()
     }
 
-    fn minimal() -> Vec<(&'static str, &'static str)> {
+    pub(crate) fn minimal() -> Vec<(&'static str, &'static str)> {
         vec![
             ("GRDF_USERNAME", EMAIL),
             ("GRDF_PASSWORD", PASSWORD),
@@ -1088,7 +712,9 @@ mod tests {
     }
 
     /// `minimal()` modifié : une valeur vide retire la variable.
-    fn minimal_with(changes: &[(&'static str, &'static str)]) -> BTreeMap<String, String> {
+    pub(crate) fn minimal_with(
+        changes: &[(&'static str, &'static str)],
+    ) -> BTreeMap<String, String> {
         let mut e = env(&minimal());
         for (k, v) in changes {
             if v.is_empty() {
@@ -1100,25 +726,25 @@ mod tests {
         e
     }
 
-    fn line(config: Option<&str>, params: &[(&'static str, &str)]) -> CommandLine {
+    pub(crate) fn line(config: Option<&str>, params: &[(&'static str, &str)]) -> CommandLine {
         CommandLine {
             config_path: config.map(str::to_owned),
             params: params.iter().map(|(k, v)| (*k, (*v).to_owned())).collect(),
         }
     }
 
-    fn from_env(e: &BTreeMap<String, String>) -> Loaded {
+    pub(crate) fn from_env(e: &BTreeMap<String, String>) -> Loaded {
         load(&CommandLine::default(), e, &Fs::default())
     }
 
-    fn accepted(loaded: Loaded) -> Config {
+    pub(crate) fn accepted(loaded: Loaded) -> Config {
         match loaded.config {
             Ok(c) => c,
             Err(e) => panic!("configuration refusée : {e}"),
         }
     }
 
-    fn refused(loaded: Loaded) -> Vec<String> {
+    pub(crate) fn refused(loaded: Loaded) -> Vec<String> {
         match loaded.config {
             Err(Error::Config(p)) => p,
             Err(e) => panic!("erreur inattendue : {e}"),
@@ -1126,113 +752,30 @@ mod tests {
         }
     }
 
-    fn single(loaded: Loaded) -> String {
+    pub(crate) fn single(loaded: Loaded) -> String {
         let p = refused(loaded);
         assert_eq!(p.len(), 1, "{p:#?}");
         p[0].clone()
     }
 
-    fn setting<'c>(c: &'c Config, name: &str) -> &'c Setting {
+    pub(crate) fn setting<'c>(c: &'c Config, name: &str) -> &'c Setting {
         c.settings
             .iter()
             .find(|s| s.name == name)
             .unwrap_or_else(|| panic!("{name} absent du tableau"))
     }
 
-    fn origin(c: &Config, name: &str) -> String {
+    pub(crate) fn origin(c: &Config, name: &str) -> String {
         setting(c, name).origin.to_string()
     }
+}
 
-    // --- Table des options ---
-
-    #[test]
-    fn options_are_those_of_the_manual() {
-        let names: Vec<&str> = OPTIONS.iter().map(|o| o.name).collect();
-        assert_eq!(
-            names,
-            [
-                "GRDF_USERNAME",
-                "GRDF_PASSWORD",
-                "GRDF_PCE",
-                "HA_URL",
-                "HA_TOKEN",
-                "GAZPAR_SCAN_INTERVAL",
-                "GAZPAR_HISTORY_DAYS",
-                "GAZPAR_OVERLAP_DAYS",
-                "GAZPAR_STATISTIC_PREFIX",
-                "GAZPAR_LOG_LEVEL",
-            ]
-        );
-        for removed in ["GAZPAR_TIMEZONE", "GAZPAR_CONSUMPTION_TYPE", "LOG_LEVEL"] {
-            assert!(!file_keys().contains(&removed), "{removed}");
-        }
-    }
-
-    #[test]
-    fn table_is_consistent() {
-        for o in &OPTIONS {
-            if let Some(v) = o.file_variant {
-                assert_eq!(v, format!("{}_FILE", o.name));
-            } else {
-                assert!(o.on_command_line, "{} : ni paramètre ni _FILE", o.name);
-            }
-            assert_eq!(
-                o.default.is_none(),
-                o.name.starts_with("GRDF_") || o.name.starts_with("HA_")
-            );
-            assert!(!o.help.is_empty());
-        }
-    }
-
-    #[test]
-    fn parameter_names_are_derived() {
-        assert_eq!(parameter("GRDF_PCE"), "--grdf-pce");
-        assert_eq!(parameter("GAZPAR_LOG_LEVEL"), "--gazpar-log-level");
-        assert_eq!(parameter("HA_TOKEN_FILE"), "--ha-token-file");
-        let params = parameters();
-        let get = |p: &str| params.iter().find(|(n, _)| n == p).map(|(_, t)| t.clone());
-        assert_eq!(
-            get("--grdf-pce"),
-            Some(ParameterTarget::Accepted("GRDF_PCE"))
-        );
-        assert_eq!(
-            get("--grdf-username"),
-            Some(ParameterTarget::Accepted("GRDF_USERNAME"))
-        );
-        assert_eq!(
-            get("--grdf-password"),
-            Some(ParameterTarget::Refused {
-                variable: "GRDF_PASSWORD",
-                instead: "--grdf-password-file".to_owned()
-            })
-        );
-        assert_eq!(
-            get("--ha-token"),
-            Some(ParameterTarget::Refused {
-                variable: "HA_TOKEN",
-                instead: "--ha-token-file".to_owned()
-            })
-        );
-        assert_eq!(
-            get("--ha-token-file"),
-            Some(ParameterTarget::Accepted("HA_TOKEN_FILE"))
-        );
-        // Développement et fichier : pas de paramètre.
-        for absent in ["--grdf-base-url", "--grdf-login-url", "--gazpar-config"] {
-            assert_eq!(get(absent), None, "{absent}");
-        }
-        assert_eq!(params.len(), 14);
-    }
-
-    #[test]
-    fn file_keys_are_options_and_variants() {
-        let keys = file_keys();
-        assert_eq!(keys.len(), 14);
-        assert!(keys.contains(&"GRDF_PASSWORD_FILE"));
-        for absent in ["GAZPAR_CONFIG", "GRDF_BASE_URL", "GRDF_LOGIN_URL"] {
-            assert!(!keys.contains(&absent), "{absent}");
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
+    use crate::domain::Measure;
+    use crate::log::Level;
 
     // --- Cas nominal et valeurs par défaut ---
 
@@ -1607,267 +1150,6 @@ mod tests {
         );
     }
 
-    // --- Validation des valeurs ---
-
-    #[test]
-    fn pce_must_be_14_digits() {
-        for bad in [
-            "1234567890123",
-            "123456789012345",
-            "1234567890123a",
-            "12345 78901234",
-        ] {
-            let p = single(from_env(&minimal_with(&[("GRDF_PCE", bad)])));
-            assert!(
-                p.starts_with("GRDF_PCE (environnement) : 14 chiffres"),
-                "{p}"
-            );
-        }
-    }
-
-    #[test]
-    fn username_must_be_an_email() {
-        let p = single(from_env(&minimal_with(&[("GRDF_USERNAME", "jean.dupont")])));
-        assert_eq!(
-            p,
-            "GRDF_USERNAME (environnement) : une adresse e-mail est attendue (pas de « @ »)"
-        );
-    }
-
-    #[test]
-    fn ha_url_path_is_added_when_missing() {
-        for (given, kept) in [
-            (
-                "ws://192.168.1.10:8123",
-                "ws://192.168.1.10:8123/api/websocket",
-            ),
-            (
-                "ws://192.168.1.10:8123/",
-                "ws://192.168.1.10:8123/api/websocket",
-            ),
-            ("ws://homeassistant", "ws://homeassistant/api/websocket"),
-            ("ws://ha:8123/api/websocket", "ws://ha:8123/api/websocket"),
-            ("ws://ha:8123/autre/chemin", "ws://ha:8123/autre/chemin"),
-        ] {
-            let c = accepted(from_env(&minimal_with(&[("HA_URL", given)])));
-            assert_eq!(c.ha_url, kept, "{given}");
-            assert_eq!(setting(&c, "HA_URL").shown, kept);
-        }
-    }
-
-    #[test]
-    fn ha_url_must_be_plain_websocket() {
-        let p = single(from_env(&minimal_with(&[(
-            "HA_URL",
-            "wss://ha.example.org",
-        )])));
-        assert!(
-            p.contains("wss://") && p.contains("pas pris en charge"),
-            "{p}"
-        );
-        for bad in [
-            "http://192.168.0.88:8123",
-            "192.168.0.88:8123",
-            "ws://",
-            "ws:///api",
-            "ws://:8123/",
-        ] {
-            let p = single(from_env(&minimal_with(&[("HA_URL", bad)])));
-            assert!(p.starts_with("HA_URL (environnement) : "), "{bad} : {p}");
-        }
-        let p = single(from_env(&minimal_with(&[("HA_URL", "ws://u:p@ha:8123")])));
-        assert!(p.contains("identifiants"), "{p}");
-        assert!(!p.contains("u:p"), "{p}");
-    }
-
-    #[test]
-    fn ha_url_is_checked_by_the_connection_parser() {
-        // Refusées ici, et non plus seulement à la connexion (code 1, puis
-        // nouvel essai toutes les 8 h par le démon).
-        for (bad, why) in [
-            ("ws://ha:abc", "adresse invalide : port invalide"),
-            ("ws://ha:0", "adresse invalide : port invalide"),
-            ("ws://ha:", "adresse invalide : port invalide"),
-            (
-                "ws://ha:99999/api/websocket",
-                "adresse invalide : port invalide",
-            ),
-            (
-                "ws://[::1/api/websocket",
-                "adresse invalide : hôte manquant ou invalide",
-            ),
-            (
-                "ws://[secret]:8123",
-                "adresse invalide : hôte manquant ou invalide",
-            ),
-            (
-                "ws://ha/api websocket",
-                "adresse invalide : espace ou caractère de contrôle dans l'adresse",
-            ),
-            (
-                "ws://ha:8123?x",
-                "requête (?) et fragment (#) non pris en charge",
-            ),
-            (
-                "ws://ha:8123/api/websocket?x=1",
-                "requête (?) et fragment (#)",
-            ),
-            ("ws://ha:8123#x", "requête (?) et fragment (#)"),
-            ("ws://ha:8123/#x", "requête (?) et fragment (#)"),
-        ] {
-            let p = single(from_env(&minimal_with(&[("HA_URL", bad)])));
-            assert!(
-                p.starts_with(&format!("HA_URL (environnement) : {why}")),
-                "{bad} : {p}"
-            );
-            assert!(p.ends_with("(ex. ws://192.168.1.10:8123)"), "{bad} : {p}");
-            assert!(!p.contains("secret"), "{p}");
-        }
-    }
-
-    #[test]
-    fn ha_url_ipv6_and_case() {
-        for (given, kept) in [
-            ("ws://[::1]:8123", "ws://[::1]:8123/api/websocket"),
-            ("WS://HA.Local:8123/", "ws://ha.local:8123/api/websocket"),
-            (
-                "ws://[fd00::1]/api/websocket",
-                "ws://[fd00::1]/api/websocket",
-            ),
-        ] {
-            let c = accepted(from_env(&minimal_with(&[("HA_URL", given)])));
-            assert_eq!(c.ha_url, kept, "{given}");
-        }
-    }
-
-    #[test]
-    fn numeric_bounds() {
-        assert_eq!(
-            single(from_env(&minimal_with(&[("GAZPAR_SCAN_INTERVAL", "59")]))),
-            "GAZPAR_SCAN_INTERVAL (environnement) : 59 minutes hors limites (au moins 60)"
-        );
-        let c = accepted(from_env(&minimal_with(&[("GAZPAR_SCAN_INTERVAL", " 60 ")])));
-        assert_eq!(c.scan_interval_minutes, 60);
-        for (name, bad) in [
-            ("GAZPAR_OVERLAP_DAYS", "0"),
-            ("GAZPAR_OVERLAP_DAYS", "61"),
-            ("GAZPAR_HISTORY_DAYS", "0"),
-            ("GAZPAR_HISTORY_DAYS", "3651"),
-            ("GAZPAR_SCAN_INTERVAL", "-480"),
-            ("GAZPAR_SCAN_INTERVAL", "8h"),
-            ("GAZPAR_SCAN_INTERVAL", "99999999999"),
-        ] {
-            let p = single(from_env(&minimal_with(&[(name, bad)])));
-            assert!(p.starts_with(name), "{name}={bad} : {p}");
-        }
-        for (name, ok) in [("GAZPAR_OVERLAP_DAYS", "1"), ("GAZPAR_HISTORY_DAYS", "1")] {
-            accepted(from_env(&minimal_with(&[(name, ok)])));
-        }
-    }
-
-    #[test]
-    fn invalid_value_is_not_quoted() {
-        let fs = Fs::default().with(CONF, "GAZPAR_OVERLAP_DAYS=deux\n");
-        assert_eq!(
-            single(load(&line(Some(CONF), &[]), &env(&minimal()), &fs)),
-            format!(
-                "GAZPAR_OVERLAP_DAYS (fichier {CONF}) : nombre entier de jours attendu \
-                 (entre 1 et 60)"
-            )
-        );
-    }
-
-    #[test]
-    fn log_level_values() {
-        let p = single(from_env(&minimal_with(&[("GAZPAR_LOG_LEVEL", "warn")])));
-        assert_eq!(
-            p,
-            "GAZPAR_LOG_LEVEL (environnement) : « info » ou « debug » attendu"
-        );
-        let c = accepted(from_env(&minimal_with(&[("GAZPAR_LOG_LEVEL", "DEBUG")])));
-        assert_eq!(setting(&c, "GAZPAR_LOG_LEVEL").shown, "debug");
-    }
-
-    #[test]
-    fn old_log_level_variable_has_no_effect() {
-        let c = accepted(from_env(&minimal_with(&[("LOG_LEVEL", "debug")])));
-        assert_eq!(c.log_level, Level::Info);
-    }
-
-    #[test]
-    fn statistic_prefix_is_validated() {
-        for bad in ["Gazpar", "gaz-par", "gaz:par", "sensor.", "_gazpar"] {
-            let p = single(from_env(&minimal_with(&[("GAZPAR_STATISTIC_PREFIX", bad)])));
-            assert!(p.starts_with("GAZPAR_STATISTIC_PREFIX"), "{bad}");
-            // « sensor. » figure dans l'exemple du message lui-même.
-            assert!(bad == "sensor." || !p.contains(bad), "{p}");
-        }
-        let c = accepted(from_env(&minimal_with(&[(
-            "GAZPAR_STATISTIC_PREFIX",
-            "gaz",
-        )])));
-        assert_eq!(c.energy_statistic.as_str(), "gaz:12345678901234_energy");
-    }
-
-    #[test]
-    fn bad_prefix_reported_even_with_bad_pce() {
-        let e = minimal_with(&[("GRDF_PCE", "x"), ("GAZPAR_STATISTIC_PREFIX", "A")]);
-        assert_eq!(refused(from_env(&e)).len(), 2);
-    }
-
-    // --- Adresses GRDF de développement ---
-
-    #[test]
-    fn dev_urls_only_towards_localhost() {
-        for (ok, kept) in [
-            ("http://localhost", "http://localhost"),
-            ("http://localhost:8080/x", "http://localhost:8080/x"),
-            ("https://127.0.0.1:8443", "https://127.0.0.1:8443"),
-            ("http://LOCALHOST:1/", "http://localhost:1"),
-        ] {
-            assert_eq!(local_url(ok).as_deref(), Some(kept), "{ok}");
-        }
-        for bad in [
-            "http://localhost.evil.com",
-            "http://127.0.0.1@evil.com",
-            "http://evil.com@localhost.evil.com",
-            "http://127.0.0.1.evil.com:80",
-            "http://localhost:80@evil.com",
-            "http://localhost:",
-            "http://localhost:80x",
-            "http://localhost:0",
-            "http://localhost:+80",
-            "http://localhost/?x=1",
-            "http://localhost/#x",
-            "ftp://localhost",
-            "ws://localhost",
-            "localhost",
-            "https://monespace.grdf.fr",
-            "http://[::1]:8080",
-            "http://127.0.0.2",
-        ] {
-            assert_eq!(local_url(bad), None, "{bad} devrait être refusé");
-        }
-    }
-
-    #[test]
-    fn dev_url_towards_real_host_is_refused() {
-        let e = minimal_with(&[("GRDF_BASE_URL", "https://monespace.grdf.fr.evil.com")]);
-        assert!(single(from_env(&e)).starts_with("GRDF_BASE_URL : réservé au développement"));
-        let e = minimal_with(&[("GRDF_LOGIN_URL", "http://127.0.0.1@evil.com")]);
-        assert!(single(from_env(&e)).starts_with("GRDF_LOGIN_URL"));
-    }
-
-    #[test]
-    fn dev_urls_are_read_from_environment_only() {
-        let fs = Fs::default().with(CONF, "GRDF_BASE_URL=http://127.0.0.1:8080\n");
-        let p = single(load(&line(Some(CONF), &[]), &env(&minimal()), &fs));
-        assert_eq!(
-            p,
-            format!("fichier de configuration {CONF}, ligne 1 : option GRDF_BASE_URL inconnue")
-        );
-    }
-
     // --- Avertissements ---
 
     #[test]
@@ -1975,143 +1257,5 @@ mod tests {
                 "GAZPAR_CONFIG : la valeur n'est pas de l'UTF-8 valide",
             ]
         );
-    }
-
-    // --- Tableau de check (MANUEL.md §4.1) ---
-
-    #[test]
-    fn report_matches_the_manual_format() {
-        let e = minimal_with(&[("HA_TOKEN", ""), ("HA_TOKEN_FILE", "/run/secrets/ha_token")]);
-        let fs = Fs::default().with("/run/secrets/ha_token", TOKEN);
-        let c = accepted(load(
-            &line(None, &[("GRDF_PCE", "01234567890123")]),
-            &e,
-            &fs,
-        ));
-        let r = c.report();
-        let lines: Vec<&str> = r.lines().collect();
-        assert_eq!(lines[0], "Fichier de configuration : aucun");
-        let width = "GAZPAR_STATISTIC_PREFIX".len() + 2;
-        let value = "ws://127.0.0.1:8123/api/websocket".len() + 3;
-        let expect = |name: &str, shown: &str, origin: &str| {
-            format!("{name:<width$}{shown:<value$}({origin})")
-        };
-        for wanted in [
-            expect("GRDF_PCE", "01234567890123", "paramètre"),
-            expect(
-                "HA_TOKEN",
-                "***",
-                "fichier /run/secrets/ha_token, via HA_TOKEN_FILE",
-            ),
-            expect("GAZPAR_LOG_LEVEL", "info", "défaut"),
-            expect("GRDF_USERNAME", "***", "environnement"),
-            expect("GRDF_PASSWORD", "***", "environnement"),
-        ] {
-            assert!(lines.contains(&wanted.as_str()), "{wanted}\n{r}");
-        }
-        assert!(r.contains(
-            "Statistiques : gazpar:01234567890123_energy (kWh), gazpar:01234567890123_volume (m³)"
-        ));
-    }
-
-    #[test]
-    fn report_names_the_config_file() {
-        let fs = Fs::default().with(CONF, "");
-        let c = accepted(load(&line(Some(CONF), &[]), &env(&minimal()), &fs));
-        assert!(
-            c.report()
-                .starts_with(&format!("Fichier de configuration : {CONF} (paramètre)\n"))
-        );
-        let e = minimal_with(&[("GAZPAR_CONFIG", CONF)]);
-        let c = accepted(load(&CommandLine::default(), &e, &fs));
-        assert!(c.report().starts_with(&format!(
-            "Fichier de configuration : {CONF} (environnement, GAZPAR_CONFIG)\n"
-        )));
-    }
-
-    // --- Aucun secret affiché ---
-
-    const SECRETS: [&str; 5] = [PASSWORD, TOKEN, EMAIL, "jeton-tres-secret", "dupont"];
-
-    fn assert_no_secret(shown: &str) {
-        for secret in SECRETS {
-            assert!(!shown.contains(secret), "{secret} visible dans {shown}");
-        }
-    }
-
-    #[test]
-    fn secret_options_are_masked_in_the_table() {
-        let c = accepted(from_env(&env(&minimal())));
-        for o in &OPTIONS {
-            let shown = &setting(&c, o.name).shown;
-            assert_eq!(shown == Secret::MASK, o.secret, "{} : {shown}", o.name);
-        }
-        let secrets: Vec<&str> = OPTIONS
-            .iter()
-            .filter(|o| o.secret)
-            .map(|o| o.name)
-            .collect();
-        assert_eq!(secrets, ["GRDF_USERNAME", "GRDF_PASSWORD", "HA_TOKEN"]);
-    }
-
-    #[test]
-    fn debug_shows_no_secret() {
-        let c = accepted(from_env(&env(&minimal())));
-        assert_no_secret(&format!("{c:?} {c:#?}"));
-        assert!(format!("{c:?}").contains("***"));
-    }
-
-    #[test]
-    fn report_shows_no_secret() {
-        let fs = Fs::default().with(
-            CONF,
-            &format!("GRDF_PASSWORD={PASSWORD}\nHA_TOKEN={TOKEN}\n"),
-        );
-        let e = minimal_with(&[("GRDF_PASSWORD", ""), ("HA_TOKEN", "")]);
-        let c = accepted(load(
-            &line(Some(CONF), &[("GRDF_USERNAME", EMAIL)]),
-            &e,
-            &fs,
-        ));
-        let r = c.report();
-        assert_no_secret(&r);
-        assert!(r.contains("12345678901234"));
-    }
-
-    #[test]
-    fn command_line_debug_shows_no_value() {
-        let l = line(Some(CONF), &[("GRDF_USERNAME", EMAIL)]);
-        let shown = format!("{l:?} {l:#?}");
-        assert_no_secret(&shown);
-        assert!(shown.contains("GRDF_USERNAME"));
-    }
-
-    #[test]
-    fn errors_and_warnings_show_no_secret() {
-        // Secrets présents partout, autre chose invalide partout.
-        let fs = Fs::default().with(
-            CONF,
-            &format!(
-                "GRDF_PASSWORD={PASSWORD}\nGRDF_PASSWORD={PASSWORD}\n{TOKEN}\n\
-                 HA_TOKEN_FILE={TOKEN}\nGAZPAR_OVERLAP_DAYS={PASSWORD}\n"
-            ),
-        );
-        let mut e = minimal_with(&[
-            ("GRDF_USERNAME", "pas-un-email-dupont"),
-            ("GRDF_PCE", PASSWORD),
-            ("HA_URL", "wss://x"),
-            ("GRDF_PASSWORD_FILE", "/f"),
-            ("GAZPAR_LOG_LEVEL", PASSWORD),
-            ("GAZPAR_STATISTIC_PREFIX", PASSWORD),
-        ]);
-        e.insert("GRDF_X".to_owned(), TOKEN.to_owned());
-        let loaded = load(
-            &line(Some(CONF), &[("GAZPAR_HISTORY_DAYS", PASSWORD)]),
-            &e,
-            &fs,
-        );
-        let warnings = loaded.warnings.join("\n");
-        let err = loaded.config.unwrap_err();
-        assert_no_secret(&format!("{err} {err:?} {warnings}"));
     }
 }
