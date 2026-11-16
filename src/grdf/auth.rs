@@ -20,7 +20,9 @@
 //! En cas de refus, le motif vient de `messages.value[].message` ou de
 //! `errorSummary`. **Aucun secret** (e-mail, mot de passe, `stateToken`,
 //! `stateHandle`, cookie, adresse complète) n'apparaît dans un journal ou une
-//! erreur : les motifs d'Okta sont expurgés avant usage. La connexion n'est
+//! erreur : `stateToken` et `stateHandle` sont gardés en [`Secret`], et les
+//! motifs d'Okta sont expurgés de tous les secrets, puis raccourcis
+//! ([`crate::secret::scrub`]), avant usage. La connexion n'est
 //! jamais retentée ici : un mauvais mot de passe = une seule tentative.
 //!
 //! **Refus des identifiants ou échec passager.** Un refus clair des
@@ -56,7 +58,7 @@ use serde_json::{Value, json};
 
 use super::http::{AllowedHosts, HttpClient};
 use crate::error::Error;
-use crate::secret::Secret;
+use crate::secret::{self, Secret};
 use crate::url::Url;
 
 pub const IDENTIFY_PATH: &str = "/idp/idx/identify";
@@ -108,6 +110,8 @@ pub fn login(
     login_url: &str,
     credentials: &Credentials,
 ) -> Result<(), Error> {
+    // En clair seulement pour être envoyés à GRDF ; les messages passent par
+    // `reason`, qui expurge `credentials`.
     let username = credentials.username.expose();
     let password = credentials.password.expose();
     info!("connexion à Mon Espace GRDF");
@@ -121,13 +125,15 @@ pub fn login(
             start.final_url.redacted()
         )));
     }
-    let state_token = extract_state_token(&start.body).ok_or_else(|| {
-        Error::GrdfLogin(
-            "jeton « stateToken » introuvable dans la page de connexion \
+    let state_token = extract_state_token(&start.body)
+        .map(Secret::new)
+        .ok_or_else(|| {
+            Error::GrdfLogin(
+                "jeton « stateToken » introuvable dans la page de connexion \
              (le parcours de connexion de GRDF a peut-être changé)"
-                .to_owned(),
-        )
-    })?;
+                    .to_owned(),
+            )
+        })?;
 
     debug!("connexion 2/5 : cookie ln");
     http.set_cookie("ln", username, login_url)?;
@@ -140,10 +146,10 @@ pub fn login(
     ];
     let identify = http.post_json(
         &format!("{login_url}{IDENTIFY_PATH}"),
-        &identify_payload(username, &state_token),
+        &identify_payload(username, state_token.expose()),
         &okta_headers,
     )?;
-    let secrets = [username, password, state_token.as_str()];
+    let secrets = [&credentials.username, &credentials.password, &state_token];
     if identify.status != 200 {
         return Err(refused(
             Step::Identify,
@@ -159,23 +165,25 @@ pub fn login(
     {
         warn!("{warning}");
     }
-    let state_handle = read_state_handle(&identify_body).ok_or_else(|| {
-        Error::GrdfLogin(format!(
-            "identification : pas de stateHandle dans la réponse ({})",
-            scrub(&login_error_reason(&identify.body), &secrets)
-        ))
-    })?;
+    let state_handle = read_state_handle(&identify_body)
+        .map(Secret::new)
+        .ok_or_else(|| {
+            Error::GrdfLogin(format!(
+                "identification : pas de stateHandle dans la réponse ({})",
+                reason(&identify.body, &secrets)
+            ))
+        })?;
 
     debug!("connexion 4/5 : mot de passe");
     let secrets = [
-        username,
-        password,
-        state_token.as_str(),
-        state_handle.as_str(),
+        &credentials.username,
+        &credentials.password,
+        &state_token,
+        &state_handle,
     ];
     let answer = http.post_json(
         &format!("{login_url}{CHALLENGE_PATH}"),
-        &challenge_payload(password, &state_handle),
+        &challenge_payload(password, state_handle.expose()),
         &okta_headers,
     )?;
     if answer.status != 200 {
@@ -193,7 +201,7 @@ pub fn login(
         .ok_or_else(|| {
             Error::GrdfLogin(format!(
                 "mot de passe : réponse sans success.href, étape supplémentaire demandée par GRDF ? ({})",
-                scrub(&login_error_reason(&answer.body), &secrets)
+                reason(&answer.body, &secrets)
             ))
         })?;
 
@@ -213,11 +221,11 @@ pub fn login(
 
 /// Erreur d'un refus d'Okta : [`Error::GrdfCredentialsRejected`] si
 /// [`credentials_rejected`], sinon [`Error::GrdfLogin`].
-fn refused(step: Step, status: u16, body: &str, secrets: &[&str]) -> Error {
+fn refused(step: Step, status: u16, body: &str, secrets: &[&Secret]) -> Error {
     let message = format!(
         "{} par GRDF (statut HTTP {status}) : {}",
         step.label(),
-        scrub(&login_error_reason(body), secrets)
+        reason(body, secrets)
     );
     if credentials_rejected(step, status, body) {
         Error::GrdfCredentialsRejected(message)
@@ -378,7 +386,7 @@ pub fn check_success_href(href: &str, allowed: &AllowedHosts) -> Result<(), Erro
 
 /// Motif d'un refus d'Okta : `messages.value[].message`, sinon
 /// `errorSummary`. Jamais le reste de la réponse, qui contient le
-/// `stateHandle`. À expurger avec [`scrub`] avant usage.
+/// `stateHandle`. Ni expurgé ni raccourci : passer par [`reason`].
 pub fn login_error_reason(body: &str) -> String {
     let Ok(body) = serde_json::from_str::<Value>(body) else {
         return "aucun motif donné".to_owned();
@@ -401,18 +409,14 @@ pub fn login_error_reason(body: &str) -> String {
     if joined.trim().is_empty() {
         "aucun motif donné".to_owned()
     } else {
-        joined.chars().take(MAX_REASON_CHARS).collect()
+        joined
     }
 }
 
-/// Remplace chaque secret non vide par `***` (un motif d'Okta peut recopier
-/// l'identifiant saisi).
-pub fn scrub(text: &str, secrets: &[&str]) -> String {
-    let mut out = text.to_owned();
-    for secret in secrets.iter().filter(|s| !s.is_empty()) {
-        out = out.replace(secret, Secret::MASK);
-    }
-    out
+/// Motif d'un refus d'Okta prêt pour un message : expurgé des secrets (un
+/// motif d'Okta peut recopier l'identifiant saisi), puis raccourci.
+fn reason(body: &str, secrets: &[&Secret]) -> String {
+    secret::scrub(&login_error_reason(body), secrets, MAX_REASON_CHARS)
 }
 
 #[cfg(test)]
@@ -646,17 +650,16 @@ mod tests {
     }
 
     #[test]
-    fn long_reason_is_cut() {
+    fn long_reason_is_cut_after_scrubbing() {
         let body = json!({"errorSummary": "x".repeat(1000)}).to_string();
-        assert_eq!(login_error_reason(&body).chars().count(), MAX_REASON_CHARS);
-    }
-
-    #[test]
-    fn scrub_removes_every_secret() {
-        let reason =
-            "Utilisateur jean@example.org inconnu (jeton 02.id.H, mdp hunter2) jean@example.org";
-        let clean = scrub(reason, &["jean@example.org", "hunter2", "02.id.H", ""]);
-        assert_eq!(clean, "Utilisateur *** inconnu (jeton ***, mdp ***) ***");
+        assert_eq!(reason(&body, &[]).chars().count(), MAX_REASON_CHARS);
+        // Secret à cheval sur la limite : masqué, pas coupé en deux.
+        let email = Secret::new("jean@example.org");
+        let text = format!("{}jean@example.org", "x".repeat(MAX_REASON_CHARS - 5));
+        let body = json!({"errorSummary": text}).to_string();
+        let shown = reason(&body, &[&email]);
+        assert!(!shown.contains("jean"), "{shown}");
+        assert!(shown.ends_with("***"), "{shown}");
     }
 
     #[test]
@@ -670,7 +673,11 @@ mod tests {
             Step::Challenge,
             401,
             &body,
-            &["jean@example.org", "pw", "02.id.HANDLE"],
+            &[
+                &Secret::new("jean@example.org"),
+                &Secret::new("pw"),
+                &Secret::new("02.id.HANDLE"),
+            ],
         );
         let shown = format!("{e} {e:?}");
         assert!(
@@ -772,7 +779,11 @@ mod tests {
             Step::Challenge,
             401,
             &body,
-            &["jean@example.org", "pw", "02.id.HANDLE"],
+            &[
+                &Secret::new("jean@example.org"),
+                &Secret::new("pw"),
+                &Secret::new("02.id.HANDLE"),
+            ],
         );
         assert_eq!(
             e,

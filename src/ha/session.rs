@@ -7,7 +7,8 @@
 //!
 //! Le jeton n'est lu en clair ([`Secret::expose`]) que pour construire le
 //! message `auth`, qui n'est jamais journalisé ; tout texte renvoyé par HA
-//! pendant l'authentification en est expurgé avant d'entrer dans une erreur.
+//! pendant l'authentification en est expurgé ([`secret::scrub`]) avant
+//! d'entrer dans une erreur.
 //!
 //! La session ne connaît du WebSocket que le trait [`Transport`] : elle se
 //! teste avec un transport en mémoire.
@@ -20,7 +21,10 @@ use serde_json::{Value, json};
 
 use crate::error::Error;
 use crate::ha::websocket::WebSocket;
-use crate::secret::Secret;
+use crate::secret::{self, Secret};
+
+/// Longueur maximale d'un texte de Home Assistant recopié dans une erreur.
+const MAX_TEXT_CHARS: usize = 200;
 
 /// Échange de messages texte : ce que la session demande au WebSocket.
 pub trait Transport {
@@ -156,13 +160,9 @@ fn unexpected(expected: &str, message: &Value, token: &Secret) -> Error {
     ))
 }
 
-/// Texte reçu de HA, expurgé du jeton puis raccourci.
+/// Texte reçu de HA, expurgé du jeton puis raccourci ([`secret::scrub`]).
 fn scrub(text: &str, token: &Secret) -> String {
-    let clean = match token.expose() {
-        "" => text.to_owned(),
-        secret => text.replace(secret, Secret::MASK),
-    };
-    clean.chars().take(200).collect()
+    secret::scrub(text, &[token], MAX_TEXT_CHARS)
 }
 
 #[cfg(test)]
@@ -441,14 +441,5 @@ mod tests {
         let _ = s.command(json!("x"));
         s.command(json!({ "type": "x" })).unwrap();
         assert_eq!(s.transport().commands()[0]["id"], 1);
-    }
-
-    #[test]
-    fn scrub_masks_then_shortens() {
-        let token = Secret::new("abc");
-        assert_eq!(scrub("xabcx", &token), "x***x");
-        let long = format!("{}abc", "y".repeat(199));
-        assert!(!scrub(&long, &token).contains('a'));
-        assert_eq!(scrub("abc", &Secret::new("")), "abc");
     }
 }
