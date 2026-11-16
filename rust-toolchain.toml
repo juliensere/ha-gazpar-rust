@@ -1,0 +1,6 @@
+# Chaîne de compilation figée (PLAN.md §4.3). Pour monter de version :
+# changer `channel`, puis `rust-version` dans Cargo.toml, puis `make check`.
+[toolchain]
+channel = "1.99"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

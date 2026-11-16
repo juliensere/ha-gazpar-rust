@@ -1,0 +1,40 @@
+[package]
+name = "ha-gazpar-rust"
+version = "2026.9.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+description = "Importe la consommation de gaz Gazpar (GRDF) dans les statistiques long terme de Home Assistant"
+repository = "https://github.com/juliensere/ha-gazpar-rust"
+readme = "README.md"
+publish = false
+
+[lib]
+name = "ha_gazpar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ha-gazpar"
+path = "src/main.rs"
+
+[dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+serde_json = "1"
+jiff = { version = "1", default-features = false, features = ["std", "tzdb-bundle-always"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

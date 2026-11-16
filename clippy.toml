@@ -1,0 +1,4 @@
+# Les tests ont le droit d'utiliser unwrap()/expect() ; le code de production non
+# (voir [lints.clippy] dans Cargo.toml).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

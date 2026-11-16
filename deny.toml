@@ -1,0 +1,44 @@
+# Politique de dépendances vérifiée par `cargo deny check` (make deny, CI).
+# Voir PLAN.md §4.3 et DEPENDENCIES.md.
+
+[graph]
+# Cibles réellement compilées : développement (gnu) et images (musl).
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+all-features = false
+
+[advisories]
+# Avis de sécurité RustSec : toute faille connue fait échouer la vérification.
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Licences effectivement présentes dans l'arbre (cargo deny list) :
+# - CDLA-Permissive-2.0 : webpki-roots (autorités de certification de Mozilla) ;
+# - BSD-3-Clause : subtle ; ISC : ring, rustls-webpki, untrusted.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+# Une seule version de chaque crate : un doublon est à résoudre, pas à tolérer.
+multiple-versions = "deny"
+wildcards = "deny"
+allow-wildcard-paths = false
+
+[sources]
+# crates.io uniquement : ni dépôt Git, ni registre tiers.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
