@@ -3,8 +3,10 @@
 # Actions tierces épinglées par SHA de commit (version en commentaire),
 # SHA résolus avec `git ls-remote --tags` le 2026-11-16.
 #
-# TODO (étape 6) : compilation statique arm64, plafond de taille du binaire,
-#   et workflow release.yml (tag vAAAA.M.N, image multi-architecture).
+# Publication (tag vAAAA.M.N, image multi-architecture) : release.yml.
+#
+# TODO : plafond de taille du binaire. L'image arm64, compilée sous émulation
+#   QEMU, n'est construite qu'à la publication ; ici, l'image amd64 seule.
 
 name: CI
 
@@ -87,6 +89,29 @@ jobs:
           size=$(stat -c %s "$bin")
           echo "ha-gazpar ($TARGET) : $size octets"
           echo "**ha-gazpar ($TARGET)** : $size octets" >> "$GITHUB_STEP_SUMMARY"
+
+  # Détecte tôt une casse du Dockerfile ; rien n'est poussé.
+  image:
+    name: Image Docker amd64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - run: make image PLATFORMS=linux/amd64
+
+      # Sans réseau : `check` sans configuration ne contacte rien.
+      - name: Lancement de l'image
+        run: |
+          img=ha-gazpar-rust:dev
+          docker run --rm --network none "$img" --version
+          docker run --rm --network none --read-only --cap-drop ALL --user 1000:1000 "$img" --version
+          rc=0; docker run --rm --network none "$img" check || rc=$?
+          [ "$rc" -eq 2 ] || { echo "check sans configuration : code $rc, attendu 2" >&2; exit 1; }
+          env=$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$img" | grep -E '^(GAZPAR|GRDF|HA)_' || true)
+          [ -z "$env" ] || { echo "variables de configuration dans l'image : $env" >&2; exit 1; }
 
   advisories:
     name: Avis de sécurité (planifié)

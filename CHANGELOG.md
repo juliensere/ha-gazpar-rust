@@ -4,6 +4,8 @@ Toutes les évolutions notables de ha-gazpar-rust sont consignées ici, la versi
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/). Les numéros de version sont de la forme `AAAA.M.N` : `AAAA.M` est la version de Home Assistant contre laquelle la version a été validée, `N` le rang de la publication dans cette lignée.
 
+Chaque version publiée a une section dont l'en-tête est exactement `## [AAAA.M.N] - AAAA-MM-JJ` (date de publication), éventuellement suivi des versions de Home Assistant validées : `make release-check` et la publication s'appuient sur cet en-tête, et le texte de la version GitHub est le contenu de la section, jusqu'à l'en-tête suivant.
+
 ## Non publié
 
 ### Nouveautés
@@ -34,3 +36,5 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/). Les numéros 
 - Algorithme d'un relevé : lecture préalable de Home Assistant, un seul appel à GRDF pour les jours manquants et la fenêtre de rattrapage, cumuls recalculés à partir du point précédant la fenêtre, jours sans valeur jamais importés, seuls les points modifiés réécrits (deux relevés identiques n'écrivent rien), simulation sans écriture pour `check`.
 - Fuseau horaire des jours lu dans Home Assistant (`get_config`) à chaque connexion, avec une base de fuseaux embarquée ; fuseau inconnu signalé clairement. Comparaison de la version de Home Assistant avec la version de référence.
 - Requêtes vers GRDF limitées à `grdf.fr` et ses sous-domaines : une redirection ou un lien de fin de connexion vers un autre hôte est refusé, sans être suivi ni réessayé.
+- Image Docker minimale pour `linux/amd64` et `linux/arm64` (Raspberry Pi 64 bits) : `FROM scratch`, le binaire statique seul (ni shell, ni certificats, ni base de fuseaux), utilisateur non root par défaut, `ha-gazpar run` lancé par défaut, aucune variable de configuration dans l'image. `make image` (architecture locale), `make image-all` (les deux), `make dist` (binaires statiques extraits et `SHA256SUMS`) ; l'intégration continue construit l'image amd64 et la lance.
+- Publication à la pose d'un tag `vAAAA.M.N` : vérification que le tag, la version de `Cargo.toml`, `HA_VERSION` et une section datée de ce fichier concordent (`make release-check`, utilisable en local), `make check`, image multi-architecture poussée sur `ghcr.io/juliensere/ha-gazpar-rust` (étiquettes `AAAA.M.N`, `AAAA.M` et `latest`, les deux dernières seulement pour la version la plus récente) avec provenance, SBOM et attestation signée, puis version GitHub dont le texte est la section de ce fichier, binaires statiques amd64 et arm64 et `SHA256SUMS` joints.

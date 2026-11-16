@@ -29,7 +29,7 @@ export MAX_CRATES CRATES_TARGET HA_IMAGE HA_PORT HA_TEST_DIR
 
 .DEFAULT_GOAL := help
 .PHONY: help check fmt fmt-check lint test deny crates deps deps-check version-check \
-	cover build release ha-up ha-down test-ha dev image
+	cover build release ha-up ha-down test-ha dev image image-all dist release-check
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -108,5 +108,43 @@ test-ha: ha-up ## Essais réels contre le Home Assistant jetable
 dev: ## Chaîne complète contre faux GRDF et HA jetable (itération ultérieure)
 	@echo "make $@ : itération ultérieure (étapes 2 à 5)"
 
-image: ## Image arm64 et amd64 (itération ultérieure)
-	@echo "make $@ : itération ultérieure (étape 6)"
+# Image Docker (Dockerfile). Rien n'est poussé : la publication est faite par
+# .github/workflows/release.yml. PLATFORMS vaut l'architecture du démon Docker ;
+# `make image-all` construit amd64 et arm64 (celle qui n'est pas locale sous
+# émulation QEMU, plus lente).
+IMAGE ?= ha-gazpar-rust:dev
+PLATFORMS ?= linux/$(shell docker version -f '{{.Server.Arch}}' 2>/dev/null || echo amd64)
+ALL_PLATFORMS := linux/amd64,linux/arm64
+VERSION := $(shell sed -n 's/^version = "\(.*\)"$$/\1/p' Cargo.toml | head -n 1)
+REVISION := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+
+image: ## Image de l'architecture locale (ha-gazpar-rust:dev), affiche sa taille
+	docker buildx build --platform $(PLATFORMS) \
+		--build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION) \
+		--tag $(IMAGE) --load .
+	@for p in $$(echo "$(PLATFORMS)" | tr ',' ' '); do \
+		s=$$(docker image inspect --platform $$p -f '{{.Size}}' $(IMAGE) 2>/dev/null \
+			|| docker image inspect -f '{{.Size}}' $(IMAGE)); \
+		echo "$(IMAGE) ($$p) : $$s octets"; \
+	done
+
+image-all: ## Image amd64 et arm64 (ha-gazpar-rust:dev), arm64 sous émulation
+	@$(MAKE) --no-print-directory image PLATFORMS=$(ALL_PLATFORMS)
+
+# Binaires joints aux versions GitHub : l'étape `bin` du Dockerfile, sans
+# l'image. Noms ha-gazpar-<version>-linux-<arch>, sommes dans SHA256SUMS.
+dist: ## Binaires statiques amd64 et arm64 dans dist/, avec SHA256SUMS
+	rm -rf dist
+	docker buildx build --platform $(ALL_PLATFORMS) --target bin \
+		--provenance=false --sbom=false --output type=local,dest=dist/oci .
+	@for a in amd64 arm64; do \
+		mv dist/oci/linux_$$a/ha-gazpar dist/ha-gazpar-$(VERSION)-linux-$$a; \
+	done
+	@rm -r dist/oci
+	@cd dist && sha256sum ha-gazpar-* > SHA256SUMS && cat SHA256SUMS
+	@for f in dist/ha-gazpar-*; do echo "$$f : $$(stat -c %s $$f) octets"; done
+
+# Hors de `make check` : échoue tant que CHANGELOG.md n'a pas de section
+# datée pour la version de Cargo.toml.
+release-check: ## Concordance tag, Cargo.toml, HA_VERSION et CHANGELOG.md (TAG=vAAAA.M.N)
+	@scripts/release-check.sh check $(if $(TAG),$(TAG),v$(VERSION))
