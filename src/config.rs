@@ -819,16 +819,16 @@ impl Loader<'_> {
         let (level, level_origin) = level?;
 
         let mut rows = vec![
-            row("GRDF_USERNAME", Secret::MASK.to_owned(), u_origin),
-            row("GRDF_PASSWORD", Secret::MASK.to_owned(), p_origin),
-            row("GRDF_PCE", pce.clone(), pce_origin),
-            row("HA_URL", ha_url.clone(), url_origin),
-            row("HA_TOKEN", Secret::MASK.to_owned(), t_origin),
-            row("GAZPAR_SCAN_INTERVAL", scan.to_string(), scan_origin),
-            row("GAZPAR_HISTORY_DAYS", history.to_string(), history_origin),
-            row("GAZPAR_OVERLAP_DAYS", overlap.to_string(), overlap_origin),
-            row("GAZPAR_STATISTIC_PREFIX", prefix, prefix_origin),
-            row("GAZPAR_LOG_LEVEL", level.to_string(), level_origin),
+            row("GRDF_USERNAME", &username, u_origin),
+            row("GRDF_PASSWORD", &password, p_origin),
+            row("GRDF_PCE", &pce, pce_origin),
+            row("HA_URL", &ha_url, url_origin),
+            row("HA_TOKEN", &ha_token, t_origin),
+            row("GAZPAR_SCAN_INTERVAL", &scan.to_string(), scan_origin),
+            row("GAZPAR_HISTORY_DAYS", &history.to_string(), history_origin),
+            row("GAZPAR_OVERLAP_DAYS", &overlap.to_string(), overlap_origin),
+            row("GAZPAR_STATISTIC_PREFIX", &prefix, prefix_origin),
+            row("GAZPAR_LOG_LEVEL", &level.to_string(), level_origin),
         ];
         rows.append(&mut settings);
 
@@ -877,7 +877,7 @@ impl Loader<'_> {
         };
         if is_local_url(url) {
             let url = url.trim_end_matches('/').to_owned();
-            rows.push(row(name, url.clone(), Origin::direct(Source::Environment)));
+            rows.push(row(name, &url, Origin::direct(Source::Environment)));
             url
         } else {
             self.problem(format!(
@@ -889,10 +889,13 @@ impl Loader<'_> {
     }
 }
 
-fn row(name: &'static str, shown: String, origin: Origin) -> Setting {
+/// Ligne du tableau de `check` : la valeur est remplacée par `***` pour une
+/// option marquée secrète dans [`OPTIONS`].
+fn row(name: &'static str, value: &str, origin: Origin) -> Setting {
+    let secret = OPTIONS.iter().any(|o| o.name == name && o.secret);
     Setting {
         name,
-        shown,
+        shown: if secret { Secret::MASK } else { value }.to_owned(),
         origin,
     }
 }
@@ -1972,6 +1975,21 @@ mod tests {
         for secret in SECRETS {
             assert!(!shown.contains(secret), "{secret} visible dans {shown}");
         }
+    }
+
+    #[test]
+    fn secret_options_are_masked_in_the_table() {
+        let c = accepted(from_env(&env(&minimal())));
+        for o in &OPTIONS {
+            let shown = &setting(&c, o.name).shown;
+            assert_eq!(shown == Secret::MASK, o.secret, "{} : {shown}", o.name);
+        }
+        let secrets: Vec<&str> = OPTIONS
+            .iter()
+            .filter(|o| o.secret)
+            .map(|o| o.name)
+            .collect();
+        assert_eq!(secrets, ["GRDF_USERNAME", "GRDF_PASSWORD", "HA_TOKEN"]);
     }
 
     #[test]
