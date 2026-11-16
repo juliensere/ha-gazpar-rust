@@ -9,6 +9,8 @@
 //! 4. `POST <login>/idp/idx/challenge/answer`
 //!    `{"credentials": {"passcode"}, "stateHandle"}` → `success.href` ;
 //! 5. `GET success.href` (redirections suivies) → 200 : session ouverte.
+//!    `success.href` n'est suivie que si son hôte est autorisé par le
+//!    client HTTP (`grdf.fr` en production, voir [`super::http::AllowedHosts`]).
 //!
 //! Écart avec PyGazpar : la vraie réponse d'`identify` (jeu d'essai
 //! `okta_identify_response.json`) n'a pas de `stateHandle` à la racine,
@@ -28,7 +30,7 @@
 
 use serde_json::{Value, json};
 
-use super::http::HttpClient;
+use super::http::{AllowedHosts, HttpClient};
 use super::url::Url;
 use crate::error::Error;
 use crate::secret::Secret;
@@ -147,6 +149,7 @@ pub fn login(
         })?;
 
     debug!("connexion 5/5 : fin de connexion");
+    check_success_href(&success_href, http.allowed_hosts())?;
     let done = http.get(&success_href, &[], &[])?;
     if done.status != 200 {
         return Err(Error::GrdfLogin(format!(
@@ -264,6 +267,22 @@ pub fn read_success_href(body: &Value) -> Option<String> {
         .as_str()
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
+}
+
+/// `success.href` ne doit mener qu'à un hôte autorisé ; l'erreur ne nomme
+/// que l'hôte (la requête porte un jeton).
+pub fn check_success_href(href: &str, allowed: &AllowedHosts) -> Result<(), Error> {
+    let url = Url::parse(href)
+        .map_err(|_| Error::GrdfLogin("fin de connexion : success.href illisible".to_owned()))?;
+    if allowed.allows(url.host()) {
+        Ok(())
+    } else {
+        Err(Error::GrdfLogin(format!(
+            "fin de connexion : success.href mène à l'hôte {}, hors de {} : refusé",
+            url.host(),
+            allowed.describe()
+        )))
+    }
 }
 
 /// Motif d'un refus d'Okta : `messages.value[].message`, sinon
@@ -472,6 +491,36 @@ mod tests {
         ] {
             assert_eq!(read_success_href(&body), None);
         }
+    }
+
+    #[test]
+    fn success_href_must_stay_on_grdf_fr() {
+        let allowed =
+            AllowedHosts::from_urls(&["https://monespace.grdf.fr", "https://connexion.grdf.fr"])
+                .unwrap();
+        check_success_href(
+            "https://connexion.grdf.fr/login/token/redirect?stateToken=X",
+            &allowed,
+        )
+        .unwrap();
+        let e = check_success_href(
+            "https://connexion.grdf.fr.example.org/login/token/redirect?stateToken=SECRET",
+            &allowed,
+        )
+        .unwrap_err();
+        assert_eq!(
+            e,
+            Error::GrdfLogin(
+                "fin de connexion : success.href mène à l'hôte connexion.grdf.fr.example.org, \
+                 hors de grdf.fr : refusé"
+                    .into()
+            )
+        );
+        let e = check_success_href("/relatif?stateToken=SECRET", &allowed).unwrap_err();
+        assert!(
+            matches!(&e, Error::GrdfLogin(m) if !m.contains("SECRET")),
+            "{e}"
+        );
     }
 
     // --- Motifs de refus ---

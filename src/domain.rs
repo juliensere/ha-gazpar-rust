@@ -3,8 +3,8 @@
 //!
 //! Aucune entrée-sortie ni lecture de l'horloge ici : ce module ne fait que
 //! des calculs et des validations. Les jours sont des dates civiles
-//! (`jiff::civil::Date`) ; leur conversion en minuit dans le fuseau configuré
-//! appartient à `ha/`.
+//! (`jiff::civil::Date`) ; leur conversion en minuit dans le fuseau de Home
+//! Assistant appartient à `ha/`.
 //!
 //! Dépendances : `jiff` (dates civiles) et `error`.
 
@@ -350,8 +350,11 @@ impl FromStr for StatisticId {
     }
 }
 
-/// Point de statistique quotidien : consommation du jour (`state`) et cumul
-/// depuis l'origine (`sum`).
+/// Point de statistique quotidien : `sum` est le cumul depuis l'origine.
+///
+/// `sync` écrit `state = sum` (un compteur, comme gazpar2haws) et ne lit
+/// jamais `state` : la consommation d'un jour est la différence de `sum`
+/// avec le point précédent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatPoint {
     pub day: Date,

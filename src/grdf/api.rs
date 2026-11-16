@@ -27,7 +27,7 @@ use jiff::civil::Date;
 use serde_json::Value;
 
 use super::auth::{self, Credentials};
-use super::http::{HttpClient, Response};
+use super::http::{AllowedHosts, HttpClient, Response};
 use super::url::Url;
 use crate::domain::DailyReading;
 use crate::error::Error;
@@ -69,6 +69,8 @@ pub struct GrdfClient {
     /// Préfixe des réponses de l'API : une page HTML ailleurs signale une
     /// session expirée.
     api_prefix: String,
+    /// Hôtes joignables : ceux de `base_url` et `login_url` (manuel §9).
+    allowed: AllowedHosts,
     credentials: Credentials,
     pce: String,
     sleep: Sleeper,
@@ -82,12 +84,13 @@ impl GrdfClient {
         let base_url = settings.base_url.trim_end_matches('/').to_owned();
         let login_url = settings.login_url.trim_end_matches('/').to_owned();
         let base = Url::parse(&base_url)?;
-        Url::parse(&login_url)?;
+        let allowed = AllowedHosts::from_urls(&[&base_url, &login_url])?;
         let api_prefix = format!("{}/api", base.redacted().trim_end_matches('/'));
         Ok(GrdfClient {
             base_url,
             login_url,
             api_prefix,
+            allowed,
             credentials: settings.credentials,
             pce: settings.pce,
             sleep,
@@ -99,7 +102,7 @@ impl GrdfClient {
     /// Ouvre une nouvelle session (cookies neufs), sans reprise.
     fn login(&mut self) -> Result<(), Error> {
         self.session = None;
-        let mut http = HttpClient::new();
+        let mut http = HttpClient::new(self.allowed.clone());
         auth::login(
             &mut http,
             &self.base_url,
@@ -601,6 +604,7 @@ mod tests {
         );
         assert!(client.session.is_none());
         assert_eq!(client.api_prefix, "http://127.0.0.1:9/api");
+        assert_eq!(client.allowed.describe(), "127.0.0.1");
     }
 
     #[test]

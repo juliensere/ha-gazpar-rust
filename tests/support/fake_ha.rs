@@ -2,10 +2,10 @@
 //! le système), un thread, une connexion à la fois.
 //!
 //! Il joue l'authentification (`auth_required`, puis `auth_ok` ou
-//! `auth_invalid` selon le jeton) et répond à
-//! `recorder/statistics_during_period`, `recorder/import_statistics` et
-//! `recorder/clear_statistics` à partir d'un état en mémoire, consultable
-//! par [`FakeHa::state`].
+//! `auth_invalid` selon le jeton) et répond à `get_config` (fuseau
+//! [`TIME_ZONE`] par défaut, réglable), `recorder/statistics_during_period`,
+//! `recorder/import_statistics` et `recorder/clear_statistics` à partir d'un
+//! état en mémoire, consultable par [`FakeHa::state`].
 //!
 //! Comportements de HA imités : `start` rendu en millisecondes Unix ; import
 //! qui remplace le point de même `start` ; refus d'une `source` qui ne
@@ -34,6 +34,8 @@ use serde_json::{Map, Value, json};
 
 /// Version annoncée dans `auth_ok`.
 pub const VERSION: &str = "2026.9.1";
+/// Fuseau rendu par `get_config`, sauf [`FakeHa::start_with_time_zone`].
+pub const TIME_ZONE: &str = "Europe/Paris";
 
 /// Point stocké.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,6 +53,8 @@ pub struct State {
     pub metadata: BTreeMap<String, Value>,
     /// Commandes reçues après authentification, dans l'ordre.
     pub commands: Vec<Value>,
+    /// Fuseau rendu par `get_config`.
+    pub time_zone: String,
     /// Nombre d'authentifications refusées.
     pub rejected_auths: usize,
 }
@@ -71,11 +75,19 @@ pub struct FakeHa {
 }
 
 impl FakeHa {
-    /// Démarre un faux HA qui n'accepte que `token`.
+    /// Démarre un faux HA qui n'accepte que `token`, dans le fuseau [`TIME_ZONE`].
     pub fn start(token: &str) -> FakeHa {
+        FakeHa::start_with_time_zone(token, TIME_ZONE)
+    }
+
+    /// Démarre un faux HA dont `get_config` rend le fuseau `time_zone`.
+    pub fn start_with_time_zone(token: &str, time_zone: &str) -> FakeHa {
         let listener = TcpListener::bind("127.0.0.1:0").expect("écoute sur 127.0.0.1");
         let addr = listener.local_addr().expect("adresse locale");
-        let state = Arc::new(Mutex::new(State::default()));
+        let state = Arc::new(Mutex::new(State {
+            time_zone: time_zone.to_owned(),
+            ..State::default()
+        }));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let (state, stop, token) = (Arc::clone(&state), Arc::clone(&stop), token.to_owned());
@@ -199,6 +211,7 @@ type Failure = (&'static str, String);
 
 fn respond(command: &Value, state: &mut State) -> Value {
     let outcome = match command["type"].as_str().unwrap_or_default() {
+        "get_config" => Ok(get_config(state)),
         "recorder/statistics_during_period" => during_period(command, state),
         "recorder/import_statistics" => import(command, state),
         "recorder/clear_statistics" => clear(command, state),
@@ -213,6 +226,20 @@ fn respond(command: &Value, state: &mut State) -> Value {
             "error": { "code": code, "message": message },
         }),
     }
+}
+
+/// Extrait de la réponse de HA à `get_config`.
+fn get_config(state: &State) -> Value {
+    json!({
+        "latitude": 48.8566,
+        "longitude": 2.3522,
+        "elevation": 35,
+        "unit_system": { "length": "km", "mass": "g", "temperature": "°C", "volume": "L" },
+        "location_name": "Maison",
+        "time_zone": state.time_zone,
+        "version": VERSION,
+        "state": "RUNNING",
+    })
 }
 
 fn during_period(command: &Value, state: &State) -> Result<Value, Failure> {

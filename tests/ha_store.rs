@@ -15,20 +15,22 @@ use ha_gazpar::ha::stats::{HomeAssistantStore, IMPORT_BATCH_SIZE};
 use ha_gazpar::ha::websocket::Timeouts;
 use ha_gazpar::ports::StatisticsStore;
 use ha_gazpar::secret::Secret;
+use jiff::Timestamp;
 use jiff::civil::{Date, date};
-use jiff::tz::TimeZone;
 use support::fake_ha::{FakeHa, VERSION};
 
 const TOKEN: &str = "jeton-longue-duree-de-test";
 
-fn connect(ha: &FakeHa, token: &str) -> Result<HomeAssistantStore, Error> {
-    let timeouts = Timeouts {
+fn timeouts() -> Timeouts {
+    Timeouts {
         connect: Duration::from_secs(2),
         read: Duration::from_secs(5),
         write: Duration::from_secs(5),
-    };
-    let paris = TimeZone::get("Europe/Paris").unwrap();
-    HomeAssistantStore::connect(&ha.url(), &Secret::new(token), paris, timeouts)
+    }
+}
+
+fn connect(ha: &FakeHa, token: &str) -> Result<HomeAssistantStore, Error> {
+    HomeAssistantStore::connect(&ha.url(), &Secret::new(token), timeouts())
 }
 
 /// `count` jours consécutifs à partir de `first`, avec cumul croissant.
@@ -56,6 +58,8 @@ fn import_read_replace_clear() {
     let ha = FakeHa::start(TOKEN);
     let mut store = connect(&ha, TOKEN).unwrap();
     assert_eq!(store.ha_version(), VERSION);
+    assert_eq!(store.time_zone().iana_name(), Some("Europe/Paris"));
+    assert_eq!(store.older_than_reference(), Some(false));
     let id = energy();
     // Dix jours autour du passage à l'heure d'été (29 mars 2026).
     let (from, to) = (date(2026, 3, 25), date(2026, 4, 3));
@@ -155,11 +159,57 @@ fn unreachable_home_assistant() {
     let ha = FakeHa::start(TOKEN);
     let url = ha.url();
     drop(ha);
-    let timeouts = Timeouts::default();
-    let paris = TimeZone::get("Europe/Paris").unwrap();
-    match HomeAssistantStore::connect(&url, &Secret::new(TOKEN), paris, timeouts) {
+    match HomeAssistantStore::connect(&url, &Secret::new(TOKEN), Timeouts::default()) {
         Err(Error::Io(m)) => assert!(m.contains("impossible"), "{m}"),
         Err(e) => panic!("{e}"),
         Ok(_) => panic!("connexion inattendue"),
     }
+}
+
+#[test]
+fn days_follow_the_time_zone_of_home_assistant() {
+    // HA réglé sur New York : les jours commencent à minuit de New York.
+    let ha = FakeHa::start_with_time_zone(TOKEN, "America/New_York");
+    let mut store = connect(&ha, TOKEN).unwrap();
+    assert_eq!(store.time_zone().iana_name(), Some("America/New_York"));
+    let id = energy();
+    let three = points(date(2026, 11, 1), 3);
+    store.import(&id, Measure::Energy, &three).unwrap();
+    {
+        let state = ha.state();
+        assert_eq!(state.commands[0]["type"], "get_config");
+        let starts: Vec<i64> = state.series[id.as_str()].keys().copied().collect();
+        let midnight = |s: &str| s.parse::<Timestamp>().unwrap().as_millisecond();
+        // Retour à l'heure d'hiver à New York le 1er novembre 2026.
+        assert_eq!(
+            starts,
+            [
+                midnight("2026-11-01T00:00:00-04:00"),
+                midnight("2026-11-02T00:00:00-05:00"),
+                midnight("2026-11-03T00:00:00-05:00"),
+            ]
+        );
+    }
+    assert_eq!(
+        store
+            .daily_points(&id, date(2026, 11, 1), date(2026, 11, 3))
+            .unwrap(),
+        three
+    );
+    store.close().unwrap();
+}
+
+#[test]
+fn unknown_time_zone_of_home_assistant_is_a_clear_error() {
+    let ha = FakeHa::start_with_time_zone(TOKEN, "Europe/Atlantide");
+    match connect(&ha, TOKEN) {
+        Err(Error::HomeAssistant(m)) => {
+            assert!(m.contains("\"Europe/Atlantide\""), "{m}");
+            assert!(m.contains("inconnu"), "{m}");
+        }
+        Err(e) => panic!("{e}"),
+        Ok(_) => panic!("fuseau inconnu accepté"),
+    }
+    // Aucune statistique n'a été lue ni écrite.
+    assert_eq!(ha.state().commands.len(), 1);
 }
