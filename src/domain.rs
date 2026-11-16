@@ -3,8 +3,8 @@
 //!
 //! Aucune entrée-sortie ni lecture de l'horloge ici : ce module ne fait que
 //! des calculs et des validations. Les jours sont des dates civiles
-//! (`jiff::civil::Date`) ; leur conversion en minuit dans le fuseau configuré
-//! appartient à `ha/`.
+//! (`jiff::civil::Date`) ; leur conversion en minuit dans le fuseau de Home
+//! Assistant appartient à `ha/`.
 //!
 //! Dépendances : `jiff` (dates civiles) et `error`.
 

@@ -7,7 +7,7 @@
 //! en paramètre.
 //!
 //! Les jours sont des dates civiles ; la conversion en minuit dans le fuseau
-//! configuré appartient à l'implémentation de `ha/`.
+//! de Home Assistant appartient à l'implémentation de `ha/`.
 //!
 //! Dépendances : `domain` et `error` uniquement.
 

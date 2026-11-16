@@ -10,12 +10,14 @@
 //!   points ; `source` vient de [`StatisticId::source`].
 //! - Effacement : `recorder/clear_statistics`.
 //!
-//! Seul module à convertir un jour civil en minuit dans le fuseau configuré
-//! (et inversement). Les jours de HA sont ceux de **son** fuseau : il doit
-//! être le même que celui donné ici.
+//! Seul module à convertir un jour civil en minuit dans un fuseau (et
+//! inversement). Les jours de HA sont ceux de **son** fuseau (`period:
+//! "day"`) : [`HomeAssistantStore::connect`] le lit par `get_config`
+//! ([`super::server`]) ; il n'y a pas d'option de fuseau.
 //!
-//! Dépendances : `ha::session`, `ha::websocket` (pour [`HomeAssistantStore::connect`]),
-//! `domain`, `ports`, `secret`, `error`, `log`, `serde_json`, `jiff`.
+//! Dépendances : `ha::session`, `ha::server`, `ha::websocket` (pour
+//! [`HomeAssistantStore::connect`]), `domain`, `ports`, `secret`, `error`,
+//! `log`, `serde_json`, `jiff`.
 
 use std::net::TcpStream;
 
@@ -26,6 +28,7 @@ use serde_json::{Value, json};
 
 use crate::domain::{Measure, Quantity, StatPoint, StatisticId};
 use crate::error::Error;
+use crate::ha::server;
 use crate::ha::session::{Session, Transport};
 use crate::ha::websocket::{self, Timeouts, WebSocket};
 use crate::ports::StatisticsStore;
@@ -41,29 +44,45 @@ pub struct HomeAssistantStore<T: Transport = WebSocket<TcpStream>> {
 }
 
 impl HomeAssistantStore {
-    /// Se connecte à `url` (`ws://hôte:port/api/websocket`) et s'authentifie.
-    pub fn connect(
-        url: &str,
-        token: &Secret,
-        tz: TimeZone,
-        timeouts: Timeouts,
-    ) -> Result<Self, Error> {
+    /// Se connecte à `url` (`ws://hôte:port/api/websocket`), s'authentifie
+    /// et lit le fuseau horaire de Home Assistant.
+    pub fn connect(url: &str, token: &Secret, timeouts: Timeouts) -> Result<Self, Error> {
         let ws = websocket::connect(url, timeouts)?;
-        Ok(HomeAssistantStore::new(
-            Session::authenticate(ws, token)?,
-            tz,
-        ))
+        HomeAssistantStore::open(Session::authenticate(ws, token)?)
     }
 }
 
 impl<T: Transport> HomeAssistantStore<T> {
+    /// Sur une session authentifiée : lit le fuseau de HA (`get_config`).
+    pub fn open(mut session: Session<T>) -> Result<Self, Error> {
+        let tz = server::fetch_time_zone(&mut session)?;
+        debug!(
+            "fuseau horaire de Home Assistant : {}",
+            tz.iana_name().unwrap_or("sans nom")
+        );
+        Ok(HomeAssistantStore::new(session, tz))
+    }
+
+    /// Sur une session authentifiée, avec un fuseau donné (tests).
     pub fn new(session: Session<T>, tz: TimeZone) -> Self {
         HomeAssistantStore { session, tz }
+    }
+
+    /// Fuseau des jours : celui de Home Assistant.
+    pub fn time_zone(&self) -> &TimeZone {
+        &self.tz
     }
 
     /// Version de Home Assistant annoncée à l'authentification.
     pub fn ha_version(&self) -> &str {
         self.session.ha_version()
+    }
+
+    /// Home Assistant est-il plus ancien que la version de référence
+    /// ([`crate::HA_REFERENCE`]) ? `None` si sa version est illisible.
+    /// À journaliser par l'appelant.
+    pub fn older_than_reference(&self) -> Option<bool> {
+        server::is_older_than(self.ha_version(), crate::HA_REFERENCE)
     }
 
     /// Ferme la connexion proprement.
@@ -494,6 +513,43 @@ mod tests {
     }
 
     // --- Par la session ---
+
+    #[test]
+    fn open_reads_the_time_zone_and_uses_it_for_days() {
+        let session = Session::authenticate(
+            FakeTransport::ha(|msg| match msg["type"].as_str() {
+                Some("get_config") => vec![ok(msg, json!({ "time_zone": "America/New_York" }))],
+                _ => vec![ok(msg, Value::Null)],
+            }),
+            &Secret::new("jeton"),
+        )
+        .unwrap();
+        let mut s = HomeAssistantStore::open(session).unwrap();
+        assert_eq!(s.time_zone().iana_name(), Some("America/New_York"));
+        assert_eq!(s.older_than_reference(), Some(false));
+        s.import(&energy(), Measure::Energy, &[point(date(2026, 7, 1), 1, 1)])
+            .unwrap();
+        let sent = commands(&s);
+        assert_eq!(sent[0], json!({ "type": "get_config", "id": 1 }));
+        assert_eq!(
+            sent[1]["stats"][0]["start"], "2026-07-01T00:00:00-04:00",
+            "minuit de New York, fuseau de HA"
+        );
+    }
+
+    #[test]
+    fn open_refuses_an_unknown_time_zone() {
+        let session = Session::authenticate(
+            FakeTransport::ha(|msg| vec![ok(msg, json!({ "time_zone": "Pas/Un_Fuseau" }))]),
+            &Secret::new("jeton"),
+        )
+        .unwrap();
+        match HomeAssistantStore::open(session) {
+            Err(Error::HomeAssistant(m)) => assert!(m.contains("Pas/Un_Fuseau"), "{m}"),
+            Err(e) => panic!("{e}"),
+            Ok(_) => panic!("fuseau inconnu accepté"),
+        }
+    }
 
     #[test]
     fn daily_points_sends_query_and_reads_result() {

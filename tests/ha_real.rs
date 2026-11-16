@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use ha_gazpar::domain::{Measure, Quantity, StatPoint, StatisticId};
+use ha_gazpar::ha::server;
 use ha_gazpar::ha::session::Session;
 use ha_gazpar::ha::stats::HomeAssistantStore;
 use ha_gazpar::ha::websocket::{self, Timeouts, WebSocket};
@@ -40,7 +41,6 @@ use ha_gazpar::ports::StatisticsStore;
 use ha_gazpar::secret::Secret;
 use jiff::Timestamp;
 use jiff::civil::{Date, date};
-use jiff::tz::TimeZone;
 use serde_json::{Value, json};
 
 /// Délai maximal d'attente d'une écriture du recorder.
@@ -77,12 +77,11 @@ fn timeouts() -> Timeouts {
     }
 }
 
-fn paris() -> TimeZone {
-    TimeZone::get("Europe/Paris").unwrap()
-}
-
 fn store(env: &Env) -> HomeAssistantStore {
-    HomeAssistantStore::connect(&env.url, &env.token, paris(), timeouts()).unwrap()
+    let store = HomeAssistantStore::connect(&env.url, &env.token, timeouts()).unwrap();
+    // Les essais comptent en minuits de Paris (fuseau du conteneur jetable).
+    assert_eq!(store.time_zone().iana_name(), Some("Europe/Paris"));
+    store
 }
 
 /// Session brute, pour observer les réponses de HA telles quelles.
@@ -135,12 +134,11 @@ impl<'a> Scratch<'a> {
 impl Drop for Scratch<'_> {
     fn drop(&mut self) {
         // Au mieux : une erreur ici ne doit pas masquer celle de l'essai.
-        let cleared =
-            HomeAssistantStore::connect(&self.env.url, &self.env.token, paris(), timeouts())
-                .and_then(|mut s| {
-                    s.clear(&self.ids)?;
-                    s.close()
-                });
+        let cleared = HomeAssistantStore::connect(&self.env.url, &self.env.token, timeouts())
+            .and_then(|mut s| {
+                s.clear(&self.ids)?;
+                s.close()
+            });
         if let Err(e) = cleared {
             eprintln!("nettoyage de {:?} impossible : {e}", self.ids);
         }
@@ -254,7 +252,13 @@ fn version_is_read_at_authentication() {
     let Some(env) = env() else { return };
     let store = store(&env);
     let version = store.ha_version().to_owned();
+    let older = store.older_than_reference();
     store.close().unwrap();
+    assert_eq!(
+        older,
+        Some(false),
+        "Home Assistant {version} antérieur à la référence"
+    );
     eprintln!("Home Assistant {version}");
     let parts: Vec<&str> = version.split('.').collect();
     assert!(
@@ -270,6 +274,23 @@ fn version_is_read_at_authentication() {
             "version {version} pour l'image {tag}"
         );
     }
+}
+
+#[test]
+#[ignore = "Home Assistant réel requis : make test-ha"]
+fn time_zone_is_read_from_get_config() {
+    let Some(env) = env() else { return };
+    let mut s = session(&env);
+    let config = s.command(json!({ "type": "get_config" })).unwrap();
+    s.close().unwrap();
+    eprintln!("get_config : time_zone = {}", config["time_zone"]);
+    assert_eq!(config["time_zone"], "Europe/Paris", "{config}");
+    let tz = server::time_zone_from_config(&config).unwrap();
+    assert_eq!(tz.iana_name(), Some("Europe/Paris"));
+    // Et par le client complet.
+    let store = HomeAssistantStore::connect(&env.url, &env.token, timeouts()).unwrap();
+    assert_eq!(store.time_zone().iana_name(), Some("Europe/Paris"));
+    store.close().unwrap();
 }
 
 #[test]
