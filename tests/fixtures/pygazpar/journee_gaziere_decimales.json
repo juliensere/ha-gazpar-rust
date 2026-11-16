@@ -1,0 +1,17 @@
+{
+    "98765432109876": {
+        "releves": [
+            {
+                "journeeGaziere": "2026-07-23",
+                "dateFinReleve": "2026-07-24T06:00:00+02:00",
+                "indexDebut": 2159,
+                "indexFin": 2160,
+                "volumeBrutConsomme": 0.28,
+                "energieConsomme": 3.16,
+                "coeffConversion": 11.29,
+                "temperature": 24.29,
+                "qualificationReleve": "Mesuré"
+            }
+        ]
+    }
+}

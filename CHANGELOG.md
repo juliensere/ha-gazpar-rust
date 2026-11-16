@@ -18,3 +18,5 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/). Les numéros 
 - Journal horodaté sur la sortie d'erreur, niveaux `info` et `debug`.
 - Harnais de développement (`make check`, `test`, `lint`, `deny`, `crates`, `deps`, `cover`, `release`…), politique de dépendances (`deny.toml`) et inventaire des dépendances ([DEPENDENCIES.md](DEPENDENCIES.md)) : 3 dépendances directes, 29 crates, plafond 32.
 - Intégration continue GitHub Actions : `make check` à chaque push et pull request, compilation statique x86_64 avec taille du binaire, vérification hebdomadaire des avis de sécurité ; Dependabot limité aux mises à jour de sécurité.
+- Lecture des relevés informatifs de GRDF : un relevé par jour gazier, valeurs exactes au millième, jour sans donnée conservé sans valeur (jamais 0), relevé invalide ignoré avec un avertissement. Jeux d'essai repris de PyGazpar.
+- `GAZPAR_CONSUMPTION_TYPE=published` refusé avec un message explicite : les relevés publiés ne sont pas encore pris en charge.
