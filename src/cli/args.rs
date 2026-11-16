@@ -86,8 +86,9 @@ Commandes :
   run     mode démon : un relevé tout de suite, puis toutes les
           GAZPAR_SCAN_INTERVAL minutes
   once    un seul relevé, puis sortie
-  check   vérifie la configuration (puis, dans une prochaine version, les
-          connexions à Home Assistant et à GRDF) ; n'écrit rien
+  check   vérifie la configuration, la connexion à Home Assistant et la
+          connexion à GRDF, affiche les derniers jours lus chez GRDF et ce
+          qui serait importé ; n'écrit rien
   reset   efface dans Home Assistant les deux statistiques de ha-gazpar ;
           exige --yes
 

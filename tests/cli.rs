@@ -1,6 +1,11 @@
 //! Essais du binaire `ha-gazpar` tel qu'il sera lancé : environnement vidé,
 //! vrais fichiers temporaires, codes de sortie et sorties standard. Aucun
-//! accès réseau.
+//! accès réseau : GRDF est redirigé vers un port fermé de 127.0.0.1 et
+//! Home Assistant aussi (sauf `HA_URL` du jeu d'essai `complet.conf`, sur
+//! 127.0.0.1:8124, qui ne mène jamais à GRDF : la connexion à HA vient
+//! d'abord et échoue faute de bon jeton). `check` affiche donc la
+//! configuration puis sort avec le code 1. Les commandes complètes sont
+//! essayées contre les faux serveurs dans `commands.rs`.
 
 // Fichier de test : un échec doit faire paniquer le test.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -11,13 +16,36 @@ use std::process::{Command, Output};
 const BIN: &str = env!("CARGO_BIN_EXE_ha-gazpar");
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/config");
 
+/// Port de 127.0.0.1 où rien n'écoute (réservé, jamais ouvert par un
+/// utilisateur ordinaire).
+const CLOSED: &str = "127.0.0.1:1";
+
 fn launch(args: &[&str], env: &[(&str, &str)]) -> Output {
-    Command::new(BIN)
+    let closed = format!("http://{CLOSED}");
+    let mut command = Command::new(BIN);
+    command
         .args(args)
         .env_clear()
-        .envs(env.iter().copied())
-        .output()
-        .expect("lancement du binaire")
+        // Jamais vers grdf.fr, quoi qu'il arrive.
+        .env("GRDF_BASE_URL", &closed)
+        .env("GRDF_LOGIN_URL", &closed)
+        .envs(env.iter().copied());
+    // Couverture : le binaire instrumenté écrit son profil ici.
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
+    command.output().expect("lancement du binaire")
+}
+
+/// Configuration acceptée et affichée par `check`, puis Home Assistant
+/// injoignable (ou en refus) : code 1, sans erreur de configuration.
+#[track_caller]
+fn config_accepted(out: &Output) {
+    let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
+    assert_eq!(out.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(stdout.starts_with("Configuration valide.\n"), "{stdout}");
+    assert!(stderr.contains("Home Assistant"), "{stderr}");
+    assert!(!stderr.contains("configuration invalide"), "{stderr}");
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -32,7 +60,7 @@ const VALID: [(&str, &str); 5] = [
     ("GRDF_USERNAME", "jean@example.org"),
     ("GRDF_PASSWORD", "mot-de-passe-secret"),
     ("GRDF_PCE", "12345678901234"),
-    ("HA_URL", "ws://127.0.0.1:8123/api/websocket"),
+    ("HA_URL", "ws://127.0.0.1:1/api/websocket"),
     ("HA_TOKEN", "jeton-secret"),
 ];
 
@@ -95,9 +123,12 @@ fn check_refuses_empty_environment() {
 fn check_accepts_valid_environment() {
     let out = launch(&["check"], &VALID);
     let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
-    assert_eq!(out.status.code(), Some(0), "{stderr}");
-    assert!(stdout.contains("Configuration valide."));
-    assert!(stdout.contains("pas encore vérifiées"));
+    config_accepted(&out);
+    assert!(
+        stderr.contains("ha-gazpar : entrée-sortie : Home Assistant injoignable ("),
+        "{stderr}"
+    );
+    assert!(!stdout.contains("GRDF : connecté"), "{stdout}");
     for secret in ["mot-de-passe-secret", "jeton-secret", "jean@example.org"] {
         assert!(
             !stdout.contains(secret) && !stderr.contains(secret),
@@ -118,7 +149,7 @@ fn secret_file_variant() {
     env.push(("HA_TOKEN_FILE", &path));
     let out = launch(&["check"], &env);
     let stdout = text(&out.stdout);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    config_accepted(&out);
     assert!(
         row(&stdout, "HA_TOKEN").ends_with(&format!("(fichier {path}, via HA_TOKEN_FILE)")),
         "{stdout}"
@@ -144,9 +175,9 @@ fn priority_parameter_environment_file_default() {
         ],
     );
     let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
-    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    config_accepted(&out);
     // Aucun avertissement : fichier en 600, aucune variable inconnue.
-    assert!(stderr.is_empty(), "{stderr}");
+    assert!(!stderr.contains("ATTENTION"), "{stderr}");
     assert!(
         stdout.contains(&format!(
             "Fichier de configuration : {conf} (environnement, GAZPAR_CONFIG)"
@@ -189,7 +220,7 @@ fn config_parameter_beats_config_variable() {
         &[("GAZPAR_CONFIG", "/chemin/absent.conf")],
     );
     let stdout = text(&out.stdout);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    config_accepted(&out);
     assert!(stdout.contains(&format!("Fichier de configuration : {conf} (paramètre)")));
 }
 
@@ -200,7 +231,7 @@ fn windows_line_endings_and_byte_order_mark() {
     let conf = dir.file("windows.conf", &windows, 0o600);
     let out = launch(&["check", "--config", &conf], &[]);
     let stdout = text(&out.stdout);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    config_accepted(&out);
     assert!(row(&stdout, "GRDF_PCE").contains("01234567890123"));
 }
 
@@ -211,7 +242,7 @@ fn config_file_readable_by_others_gives_a_warning() {
     let conf = dir.file("ouvert.conf", &fixture("complet.conf"), 0o644);
     let out = launch(&["check", "--config", &conf], &[]);
     let stderr = text(&out.stderr);
-    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    config_accepted(&out);
     assert!(
         stderr.contains(&format!(
             "ATTENTION le fichier de configuration {conf} est lisible par le groupe \
@@ -273,10 +304,15 @@ fn reset_without_yes_lists_statistics_and_exits_2() {
 }
 
 #[test]
-fn reset_with_yes_is_not_implemented_yet() {
+fn reset_with_yes_needs_home_assistant() {
     let out = launch(&["reset", "--yes"], &VALID);
     assert_eq!(out.status.code(), Some(1));
-    assert!(text(&out.stderr).contains("pas encore implémenté"));
+    assert!(out.stdout.is_empty());
+    assert!(
+        text(&out.stderr).contains("Home Assistant injoignable"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 #[test]
@@ -335,10 +371,18 @@ fn usage_errors_exit_2() {
 }
 
 #[test]
-fn unimplemented_commands_exit_1() {
+fn once_with_home_assistant_unreachable_exits_1() {
     let out = launch(&["once"], &VALID);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(text(&out.stderr).contains("pas encore implémenté"));
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(" ERREUR entrée-sortie : Home Assistant injoignable ("),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("GRDF"),
+        "GRDF n'est pas contacté : {stderr}"
+    );
 }
 
 #[test]
@@ -352,12 +396,16 @@ fn env_example_is_valid() {
         .collect();
     assert_eq!(vars.len(), 10, "{vars:?}");
     let out = launch(&["check"], &vars);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
-    assert!(text(&out.stderr).is_empty(), "{}", text(&out.stderr));
+    config_accepted(&out);
+    assert!(
+        !text(&out.stderr).contains("ATTENTION"),
+        "{}",
+        text(&out.stderr)
+    );
 
     // Le même fichier est aussi un fichier de configuration valide.
     let dir = TempDir::new("env_example");
     let conf = dir.file("env.conf", &example, 0o600);
     let out = launch(&["check", "--config", &conf], &[]);
-    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    config_accepted(&out);
 }
