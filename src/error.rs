@@ -21,8 +21,14 @@ pub enum Error {
     Io(String),
     /// Transport HTTP vers GRDF (connexion, TLS, délai).
     Http(String),
-    /// Échec de la connexion à Mon Espace GRDF (identifiants, flux Okta).
+    /// Échec de la connexion à Mon Espace GRDF qui ne prouve pas un refus
+    /// des identifiants (page inattendue, étape d'Okta absente, session
+    /// expirée…) : passager, un nouvel essai au relevé suivant est permis.
     GrdfLogin(String),
+    /// GRDF refuse clairement les identifiants (mot de passe faux, compte
+    /// inconnu). `run` cesse alors toute connexion à GRDF jusqu'à son
+    /// redémarrage (MANUEL.md §9). Voir `grdf::auth::credentials_rejected`.
+    GrdfCredentialsRejected(String),
     /// Réponse inattendue de l'API GRDF.
     Grdf(String),
     /// Erreur renvoyée par Home Assistant.
@@ -59,7 +65,12 @@ impl fmt::Display for Error {
             Error::Usage(m) => write!(f, "usage incorrect : {m}"),
             Error::Io(m) => write!(f, "entrée-sortie : {m}"),
             Error::Http(m) => write!(f, "HTTP : {m}"),
-            Error::GrdfLogin(m) => write!(f, "connexion à GRDF refusée : {m}"),
+            Error::GrdfLogin(m) => write!(f, "échec de la connexion à GRDF : {m}"),
+            Error::GrdfCredentialsRejected(m) => write!(
+                f,
+                "connexion à GRDF refusée : {m} ; vérifiez GRDF_USERNAME et GRDF_PASSWORD \
+                 (identifiants de Mon Espace GRDF)"
+            ),
             Error::Grdf(m) => write!(f, "API GRDF : {m}"),
             Error::HomeAssistant(m) => write!(f, "Home Assistant : {m}"),
             Error::Protocol(m) => write!(f, "protocole : {m}"),
@@ -94,8 +105,13 @@ mod tests {
     #[test]
     fn display_is_french_and_prefixed() {
         assert_eq!(
-            Error::GrdfLogin("mot de passe incorrect".into()).to_string(),
-            "connexion à GRDF refusée : mot de passe incorrect"
+            Error::GrdfLogin("page d'accueil : statut HTTP 503".into()).to_string(),
+            "échec de la connexion à GRDF : page d'accueil : statut HTTP 503"
+        );
+        assert_eq!(
+            Error::GrdfCredentialsRejected("mot de passe refusé".into()).to_string(),
+            "connexion à GRDF refusée : mot de passe refusé ; vérifiez GRDF_USERNAME et \
+             GRDF_PASSWORD (identifiants de Mon Espace GRDF)"
         );
         assert_eq!(
             Error::NotImplemented("run").to_string(),
@@ -112,6 +128,7 @@ mod tests {
         assert_eq!(Error::Config(vec![]).exit_code(), 2);
         assert_eq!(Error::Usage("x".into()).exit_code(), 2);
         assert_eq!(Error::Http("x".into()).exit_code(), 1);
+        assert_eq!(Error::GrdfCredentialsRejected("x".into()).exit_code(), 1);
         assert_eq!(Error::NotImplemented("x").exit_code(), 1);
     }
 

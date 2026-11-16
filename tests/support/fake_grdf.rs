@@ -22,7 +22,8 @@
 //! Pannes pilotables ([`Faults`]) : 429, session expirée (401 ou redirection
 //! vers la page de connexion), page HTML d'erreur, connexion coupée,
 //! redirection ou `success.href` vers un autre hôte (`localhost` au lieu de
-//! `127.0.0.1`, donc toujours local si le client le suivait à tort).
+//! `127.0.0.1`, donc toujours local si le client le suivait à tort),
+//! service de connexion indisponible (503 à `challenge/answer`).
 //! Compteurs et anomalies constatées côté serveur : [`Counters`].
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
@@ -84,6 +85,9 @@ pub struct Faults {
     pub foreign_redirect: bool,
     /// `success.href` désigne l'hôte `localhost`.
     pub foreign_success_href: bool,
+    /// Nombre de réponses 503 (page HTML) à `challenge/answer` : panne
+    /// passagère du service de connexion, pas un refus d'identifiants.
+    pub login_unavailable: u32,
 }
 
 /// Ce que le serveur a vu.
@@ -382,6 +386,7 @@ impl Reply {
             401 => "Unauthorized",
             404 => "Not Found",
             429 => "Too Many Requests",
+            503 => "Service Unavailable",
             _ => "Error",
         };
         let mut out = format!("HTTP/1.1 {} {reason}\r\n", self.status);
@@ -606,6 +611,10 @@ fn identify(state: &mut State, request: &Request) -> Reply {
 fn challenge(state: &mut State, request: &Request) -> Reply {
     state.counters.challenge += 1;
     okta_checks(state, request, "challenge");
+    if state.faults.login_unavailable > 0 {
+        state.faults.login_unavailable -= 1;
+        return Reply::html(503, "<html>Service indisponible</html>");
+    }
     let body = request.json();
     if body["stateHandle"] != STATE_HANDLE {
         state
