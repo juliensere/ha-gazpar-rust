@@ -278,6 +278,51 @@ fn empty_range_makes_no_request() {
     assert_eq!((c.start_pages, c.pce_list), (0, 0));
 }
 
+// --- Hôtes autorisés (manuel §9 : redirections hors de grdf.fr refusées) ---
+
+#[test]
+fn redirect_to_another_host_is_refused_without_following_it() {
+    let fake = FakeGrdf::start();
+    // La page d'accueil renvoie vers la page de connexion sur « localhost ».
+    fake.set_faults(Faults {
+        foreign_redirect: true,
+        ..Faults::default()
+    });
+    let (mut grdf, sleeps) = client(&fake);
+    let e = grdf.daily_readings(FROM, TO).unwrap_err();
+    assert_eq!(
+        e,
+        Error::Protocol(
+            "redirection vers l'hôte localhost refusée : seuls 127.0.0.1 sont autorisés".into()
+        )
+    );
+    let c = fake.counters();
+    assert_eq!(c.foreign_hosts, 0, "rien n'a été envoyé à l'autre hôte");
+    assert_eq!((c.start_pages, c.identify, c.logins), (0, 0, 0));
+    assert!(sleeps.borrow().is_empty(), "un refus n'est pas réessayé");
+}
+
+#[test]
+fn success_href_to_another_host_is_not_followed() {
+    let fake = FakeGrdf::start();
+    fake.set_faults(Faults {
+        foreign_success_href: true,
+        ..Faults::default()
+    });
+    let (mut grdf, sleeps) = client(&fake);
+    let e = grdf.daily_readings(FROM, TO).unwrap_err();
+    assert!(
+        matches!(&e, Error::GrdfLogin(m) if m.contains("success.href mène à l'hôte localhost")),
+        "{e}"
+    );
+    // La requête de success.href porte le stateHandle : jamais dans l'erreur.
+    assert!(!format!("{e} {e:?}").contains(STATE_HANDLE));
+    let c = fake.counters();
+    assert_eq!(c.challenge, 1, "le mot de passe a été accepté");
+    assert_eq!((c.foreign_hosts, c.logins), (0, 0));
+    assert!(sleeps.borrow().is_empty());
+}
+
 // --- Aucun secret dans les journaux ni les erreurs ---
 
 const LEAK_CHILD: &str = "HA_GAZPAR_TEST_LEAK_CHILD";
@@ -311,6 +356,21 @@ fn leak_scenarios() {
     show("mot de passe", &wrong.daily_readings(FROM, TO).unwrap_err());
     let (mut unknown, _) = client_for(&fake, "11111111111111", PASSWORD);
     show("pce", &unknown.daily_readings(FROM, TO).unwrap_err());
+
+    for faults in [
+        Faults {
+            foreign_redirect: true,
+            ..Faults::default()
+        },
+        Faults {
+            foreign_success_href: true,
+            ..Faults::default()
+        },
+    ] {
+        fake.set_faults(faults);
+        let (mut grdf, _) = client(&fake);
+        show("hôte", &grdf.daily_readings(FROM, TO).unwrap_err());
+    }
 }
 
 #[test]
@@ -344,6 +404,8 @@ fn secrets_never_reach_logs_or_errors() {
         "ERREUR mot de passe",
         "ERREUR session",
         "ERREUR pce",
+        "ERREUR hôte : protocole : redirection vers l'hôte localhost refusée",
+        "ERREUR hôte : connexion à GRDF refusée : fin de connexion : success.href",
     ] {
         assert!(text.contains(expected), "« {expected} » absent :\n{text}");
     }

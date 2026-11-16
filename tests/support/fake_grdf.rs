@@ -20,7 +20,9 @@
 //! filtré sur `dateDebut..=dateFin`, `[]` si rien).
 //!
 //! Pannes pilotables ([`Faults`]) : 429, session expirée (401 ou redirection
-//! vers la page de connexion), page HTML d'erreur, connexion coupée.
+//! vers la page de connexion), page HTML d'erreur, connexion coupée,
+//! redirection ou `success.href` vers un autre hôte (`localhost` au lieu de
+//! `127.0.0.1`, donc toujours local si le client le suivait à tort).
 //! Compteurs et anomalies constatées côté serveur : [`Counters`].
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
@@ -78,6 +80,10 @@ pub struct Faults {
     pub html_errors: u32,
     /// Nombre de connexions fermées sans réponse.
     pub drop_connections: u32,
+    /// `GET /` redirige vers la page de connexion sur l'hôte `localhost`.
+    pub foreign_redirect: bool,
+    /// `success.href` désigne l'hôte `localhost`.
+    pub foreign_success_href: bool,
 }
 
 /// Ce que le serveur a vu.
@@ -94,6 +100,8 @@ pub struct Counters {
     pub consumption: Vec<(String, String)>,
     /// Anomalies du client (cookie, en-tête ou jeton manquant…).
     pub problems: Vec<String>,
+    /// Requêtes reçues avec un en-tête `Host` autre que `127.0.0.1:…`.
+    pub foreign_hosts: u32,
 }
 
 struct State {
@@ -211,6 +219,12 @@ fn serve(listener: TcpListener, role: Role, state: &Mutex<State>, stop: &AtomicB
         };
         let reply = {
             let mut state = state.lock().unwrap();
+            if !request
+                .header("host")
+                .is_some_and(|h| h.starts_with("127.0.0.1:"))
+            {
+                state.counters.foreign_hosts += 1;
+            }
             match role {
                 Role::Base => base_route(&mut state, &request),
                 Role::Login => login_route(&mut state, &request),
@@ -405,7 +419,8 @@ fn base_route(state: &mut State, request: &Request) -> Option<Reply> {
         }
         ("GET", "/") => Reply::redirect(&format!(
             "{}/oauth2/aus5y2ta2uEHjCWIR417/v1/authorize?client_id=fake&redirect_uri={}%2F_codexch&state=%2F",
-            state.login, state.base
+            foreign_if(state.faults.foreign_redirect, &state.login),
+            state.base
         )),
         ("GET", "/_codexch") => {
             let code = request.query.get("code");
@@ -623,8 +638,20 @@ fn challenge(state: &mut State, request: &Request) -> Reply {
             "version": "1.0.0",
             "success": {
                 "name": "success-redirect",
-                "href": format!("{}/login/token/redirect?stateToken={STATE_HANDLE}", state.login)
+                "href": format!(
+                    "{}/login/token/redirect?stateToken={STATE_HANDLE}",
+                    foreign_if(state.faults.foreign_success_href, &state.login)
+                )
             }
         }),
     )
+}
+
+/// `http://127.0.0.1:port` devenu `http://localhost:port` si `foreign`.
+fn foreign_if(foreign: bool, address: &str) -> String {
+    if foreign {
+        address.replacen("127.0.0.1", "localhost", 1)
+    } else {
+        address.to_owned()
+    }
 }

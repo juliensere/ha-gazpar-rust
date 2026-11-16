@@ -9,6 +9,10 @@
 //!   301/302 sur un POST, deviennent un GET sans corps), au plus
 //!   [`MAX_REDIRECTS`] sauts, pour lire `Set-Cookie` à chaque saut et
 //!   renvoyer les bons cookies au suivant ([`super::cookies`]) ;
+//! - **hôtes limités** ([`AllowedHosts`]) : chaque requête, première comme
+//!   redirection, ne part que vers un hôte autorisé, c'est-à-dire, en
+//!   production, `grdf.fr` et ses sous-domaines (manuel §9) ; sinon erreur
+//!   [`Error::Protocol`], qui ne nomme que l'hôte refusé ;
 //! - variables `HTTP(S)_PROXY` ignorées : le démon parle directement à GRDF.
 //!
 //! Interface étroite, sans type `ureq` : [`HttpClient::get`],
@@ -40,6 +44,110 @@ pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
 pub const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 /// Nombre maximal de redirections suivies pour une requête.
 pub const MAX_REDIRECTS: usize = 10;
+
+/// Hôtes vers lesquels le client accepte d'envoyer une requête, déduits des
+/// adresses configurées (Mon Espace GRDF et connexion).
+///
+/// Pour chaque hôte configuré :
+///
+/// - `localhost` ou adresse IP (faux serveur de développement) : cet hôte
+///   exactement ;
+/// - nom d'au moins trois étiquettes (`monespace.grdf.fr`) : son domaine
+///   parent (`grdf.fr`) et tous ses sous-domaines ;
+/// - nom de deux étiquettes (`grdf.fr`) : ce domaine et ses sous-domaines ;
+/// - nom d'une seule étiquette : cet hôte exactement.
+///
+/// La comparaison se fait étiquette par étiquette : `evilgrdf.fr` et
+/// `grdf.fr.example.org` ne sont pas dans `grdf.fr`. Le port n'est pas
+/// comparé. Hypothèse : le domaine parent n'est pas un suffixe public
+/// (`co.uk`), ce que garantit la configuration (`grdf.fr` ou `localhost`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AllowedHosts {
+    rules: Vec<HostRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HostRule {
+    /// Cet hôte exactement.
+    Exact(String),
+    /// Ce domaine et ses sous-domaines.
+    Domain(String),
+}
+
+impl AllowedHosts {
+    /// Hôtes autorisés pour ces adresses configurées.
+    pub fn from_urls(urls: &[&str]) -> Result<AllowedHosts, Error> {
+        let mut rules = Vec::new();
+        for url in urls {
+            let rule = HostRule::for_configured(Url::parse(url)?.host());
+            if !rules.contains(&rule) {
+                rules.push(rule);
+            }
+        }
+        Ok(AllowedHosts { rules })
+    }
+
+    /// `host` est-il autorisé ? (Fonction pure ; casse indifférente.)
+    pub fn allows(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        self.rules.iter().any(|rule| match rule {
+            HostRule::Exact(exact) => host == *exact,
+            HostRule::Domain(domain) => {
+                host == *domain
+                    || host
+                        .strip_suffix(domain.as_str())
+                        .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.'))
+            }
+        })
+    }
+
+    /// Hôtes autorisés, pour un message : `grdf.fr`, `127.0.0.1`.
+    pub fn describe(&self) -> String {
+        let names: Vec<&str> = self
+            .rules
+            .iter()
+            .map(|rule| match rule {
+                HostRule::Exact(host) | HostRule::Domain(host) => host.as_str(),
+            })
+            .collect();
+        names.join(", ")
+    }
+
+    /// Erreur si l'hôte de `url` n'est pas autorisé ; le message ne nomme
+    /// que l'hôte (jamais le chemin ni la requête).
+    fn check(&self, url: &Url, redirected: bool) -> Result<(), Error> {
+        if self.allows(url.host()) {
+            return Ok(());
+        }
+        let what = if redirected {
+            "redirection"
+        } else {
+            "requête"
+        };
+        Err(Error::Protocol(format!(
+            "{what} vers l'hôte {} refusée : seuls {} sont autorisés",
+            url.host(),
+            self.describe()
+        )))
+    }
+}
+
+impl HostRule {
+    fn for_configured(host: &str) -> HostRule {
+        let host = host.to_ascii_lowercase();
+        let is_ip = host.starts_with('[') || host.parse::<std::net::Ipv4Addr>().is_ok();
+        let labels = host.split('.').count();
+        if is_ip || host == "localhost" || labels < 2 {
+            HostRule::Exact(host)
+        } else if labels == 2 {
+            HostRule::Domain(host)
+        } else {
+            // Au moins trois étiquettes : il y a un point.
+            let parent = host.split_once('.').map_or(host.as_str(), |(_, p)| p);
+            HostRule::Domain(parent.to_owned())
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
@@ -114,32 +222,35 @@ trait Transport {
 pub struct HttpClient {
     transport: Box<dyn Transport>,
     jar: CookieJar,
+    allowed: AllowedHosts,
 }
 
 impl fmt::Debug for HttpClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpClient")
             .field("cookies", &self.jar)
+            .field("allowed", &self.allowed)
             .finish_non_exhaustive()
     }
 }
 
-impl Default for HttpClient {
-    fn default() -> Self {
-        HttpClient::new()
-    }
-}
-
 impl HttpClient {
-    pub fn new() -> HttpClient {
-        HttpClient::with_transport(Box::new(UreqTransport::new(MAX_BODY_BYTES)))
+    /// Client qui n'envoie de requête que vers `allowed`.
+    pub fn new(allowed: AllowedHosts) -> HttpClient {
+        HttpClient::with_transport(Box::new(UreqTransport::new(MAX_BODY_BYTES)), allowed)
     }
 
-    fn with_transport(transport: Box<dyn Transport>) -> HttpClient {
+    fn with_transport(transport: Box<dyn Transport>, allowed: AllowedHosts) -> HttpClient {
         HttpClient {
             transport,
             jar: CookieJar::new(),
+            allowed,
         }
+    }
+
+    /// Hôtes vers lesquels ce client accepte d'envoyer une requête.
+    pub fn allowed_hosts(&self) -> &AllowedHosts {
+        &self.allowed
     }
 
     /// `GET url?query`, paramètres encodés ici, redirections suivies.
@@ -196,7 +307,9 @@ impl HttpClient {
             headers.insert(0, ("User-Agent".to_owned(), USER_AGENT.to_owned()));
         }
 
-        for _ in 0..=MAX_REDIRECTS {
+        for hop in 0..=MAX_REDIRECTS {
+            // Avant tout envoi, cookies compris.
+            self.allowed.check(&url, hop > 0)?;
             let mut sent = headers.clone();
             if let Some(cookie) = self.jar.header(&url, Timestamp::now()) {
                 sent.push(("Cookie".to_owned(), cookie));
@@ -408,7 +521,12 @@ mod tests {
             responses: responses.into(),
             seen: Rc::clone(&seen),
         };
-        (HttpClient::with_transport(Box::new(transport)), seen)
+        let allowed =
+            AllowedHosts::from_urls(&["https://monespace.grdf.fr", "https://h.fr"]).unwrap();
+        (
+            HttpClient::with_transport(Box::new(transport), allowed),
+            seen,
+        )
     }
 
     #[test]
@@ -592,6 +710,132 @@ mod tests {
         assert!(!e.to_string().contains("SECRET"), "{e}");
     }
 
+    // --- Hôtes autorisés ---
+
+    fn production() -> AllowedHosts {
+        AllowedHosts::from_urls(&["https://monespace.grdf.fr", "https://connexion.grdf.fr"])
+            .unwrap()
+    }
+
+    #[test]
+    fn production_allows_grdf_fr_and_its_subdomains_only() {
+        let allowed = production();
+        assert_eq!(allowed.describe(), "grdf.fr");
+        for host in [
+            "monespace.grdf.fr",
+            "connexion.grdf.fr",
+            "grdf.fr",
+            "sso.connexion.grdf.fr",
+            "MonEspace.GRDF.fr",
+        ] {
+            assert!(allowed.allows(host), "{host} devrait être accepté");
+        }
+        for host in [
+            "evilgrdf.fr",
+            "grdf.fr.example.org",
+            "monespace.grdf.fr.example.org",
+            "grdf.com",
+            "fr",
+            ".grdf.fr",
+            "",
+            "grdf-fr.okta.com",
+            "127.0.0.1",
+            "localhost",
+        ] {
+            assert!(!allowed.allows(host), "{host} devrait être refusé");
+        }
+    }
+
+    #[test]
+    fn local_addresses_must_match_exactly() {
+        let allowed =
+            AllowedHosts::from_urls(&["http://127.0.0.1:4000", "http://127.0.0.1:4001"]).unwrap();
+        assert_eq!(allowed.describe(), "127.0.0.1");
+        assert!(allowed.allows("127.0.0.1"));
+        for host in ["localhost", "127.0.0.2", "0.0.1", "1.127.0.0.1", "grdf.fr"] {
+            assert!(!allowed.allows(host), "{host}");
+        }
+        let allowed = AllowedHosts::from_urls(&["http://localhost:4000"]).unwrap();
+        assert!(allowed.allows("localhost") && allowed.allows("LOCALHOST"));
+        for host in ["127.0.0.1", "evil.localhost", "localhost.example.org"] {
+            assert!(!allowed.allows(host), "{host}");
+        }
+        let allowed = AllowedHosts::from_urls(&["http://[::1]:4000"]).unwrap();
+        assert!(allowed.allows("[::1]"));
+        assert!(!allowed.allows("[::2]"));
+    }
+
+    #[test]
+    fn short_configured_names() {
+        // Domaine de deux étiquettes : lui et ses sous-domaines, jamais « fr ».
+        let allowed = AllowedHosts::from_urls(&["https://grdf.fr"]).unwrap();
+        assert!(allowed.allows("grdf.fr") && allowed.allows("a.grdf.fr"));
+        assert!(!allowed.allows("fr") && !allowed.allows("evil.fr"));
+        // Une seule étiquette : exactement.
+        let allowed = AllowedHosts::from_urls(&["http://rasp:8080"]).unwrap();
+        assert!(allowed.allows("rasp"));
+        assert!(!allowed.allows("a.rasp"));
+        assert!(AllowedHosts::from_urls(&["pas une adresse"]).is_err());
+    }
+
+    #[test]
+    fn redirect_to_foreign_host_is_refused_before_sending() {
+        let (mut client, seen) = scripted(vec![
+            raw(
+                302,
+                &[(
+                    "Location",
+                    "https://grdf.fr.example.org/oauth2/authorize?code=SECRET",
+                )],
+                "",
+            ),
+            raw(200, &[], "ne doit pas être lu"),
+        ]);
+        let e = client
+            .get("https://monespace.grdf.fr/", &[], &[])
+            .unwrap_err();
+        assert_eq!(
+            e,
+            Error::Protocol(
+                "redirection vers l'hôte grdf.fr.example.org refusée : \
+                 seuls grdf.fr, h.fr sont autorisés"
+                    .into()
+            )
+        );
+        assert!(!format!("{e:?}").contains("SECRET"));
+        assert_eq!(seen.borrow().len(), 1, "rien n'est envoyé à l'autre hôte");
+    }
+
+    #[test]
+    fn redirect_within_grdf_fr_is_followed() {
+        let (mut client, seen) = scripted(vec![
+            raw(302, &[("Location", "https://sso.grdf.fr/x")], ""),
+            raw(200, &[], "ok"),
+        ]);
+        let r = client.get("https://monespace.grdf.fr/", &[], &[]).unwrap();
+        assert_eq!(r.body, "ok");
+        assert_eq!(seen.borrow()[1].url, "https://sso.grdf.fr/x");
+    }
+
+    #[test]
+    fn request_to_foreign_host_is_refused_before_sending() {
+        let (mut client, seen) = scripted(vec![raw(200, &[], "")]);
+        let e = client
+            .post_json(
+                "https://example.org/idp?stateToken=SECRET",
+                &serde_json::json!({}),
+                &[],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&e, Error::Protocol(m) if m.starts_with("requête vers l'hôte example.org refusée")),
+            "{e}"
+        );
+        assert!(!e.to_string().contains("SECRET"));
+        assert!(seen.borrow().is_empty());
+        assert!(client.allowed_hosts().allows("grdf.fr"));
+    }
+
     #[test]
     fn set_cookie_and_cookie_expiry_through_client() {
         let (mut client, seen) = scripted(vec![
@@ -672,6 +916,10 @@ mod tests {
         (port, handle)
     }
 
+    fn local(port: u16) -> AllowedHosts {
+        AllowedHosts::from_urls(&[&format!("http://127.0.0.1:{port}")]).unwrap()
+    }
+
     fn http_response(status: &str, headers: &str, body: &str) -> String {
         format!(
             "HTTP/1.1 {status}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -693,7 +941,7 @@ mod tests {
                 "absent é",
             ),
         ]);
-        let mut client = HttpClient::new();
+        let mut client = HttpClient::new(local(port));
         let r = client
             .post_json(
                 &format!("http://127.0.0.1:{port}/depart"),
@@ -722,7 +970,7 @@ mod tests {
     #[test]
     fn ureq_body_limit() {
         let (port, server) = serve(vec![http_response("200 OK", "", &"x".repeat(100))]);
-        let mut client = HttpClient::with_transport(Box::new(UreqTransport::new(10)));
+        let mut client = HttpClient::with_transport(Box::new(UreqTransport::new(10)), local(port));
         let e = client
             .get(&format!("http://127.0.0.1:{port}/"), &[], &[])
             .unwrap_err();
@@ -738,7 +986,7 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        let e = HttpClient::new()
+        let e = HttpClient::new(local(port))
             .get(&format!("http://127.0.0.1:{port}/?code=SECRET"), &[], &[])
             .unwrap_err();
         assert!(matches!(e, Error::Http(_)), "{e:?}");
