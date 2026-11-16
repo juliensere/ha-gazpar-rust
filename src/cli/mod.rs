@@ -33,6 +33,8 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::time::Duration;
 
+use jiff::Timestamp;
+
 use crate::app::{self, Connector, Session};
 use crate::config::{self, CommandLine, Config, Loaded};
 use crate::daemon;
@@ -56,6 +58,10 @@ pub(crate) struct Runtime<'a> {
     pub sleep: &'a mut dyn FnMut(Duration),
     /// Nombre de relevés de `run` : `None` (indéfiniment) en production.
     pub max_cycles: Option<u64>,
+    /// Horloge, lue à chaque connexion à Home Assistant pour calculer la
+    /// date du jour : [`Timestamp::now`] en production, une heure fixe dans
+    /// les tests (qui ne dépendent ainsi pas du passage de minuit).
+    pub now: fn() -> Timestamp,
 }
 
 /// Point d'entrée appelé par `main.rs` : renvoie le code de sortie.
@@ -68,6 +74,7 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> i32 {
             connector: &mut app::Network,
             sleep: &mut sleep,
             max_cycles: None,
+            now: Timestamp::now,
         },
         &mut std::io::stdout().lock(),
         &mut std::io::stderr().lock(),
@@ -137,10 +144,13 @@ fn execute(
         Level::Info,
         &report::startup(invocation.command, config.scan_interval_minutes),
     );
-    let connector = runtime.connector;
+    let services = Services {
+        connector: runtime.connector,
+        now: runtime.now,
+    };
     match invocation.command {
-        Command::Check => check(&config, connector, out, &mut journal),
-        Command::Once => match reading(connector, &config, &mut journal) {
+        Command::Check => check(&config, services, out, &mut journal),
+        Command::Once => match reading(services, &config, &mut journal) {
             Ok(_) => Ok(0),
             Err(e) => {
                 journal.log(Level::Error, &e.to_string());
@@ -148,7 +158,7 @@ fn execute(
             }
         },
         Command::Reset => {
-            let ids = with_session(connector, &config, &mut journal, |session, _| {
+            let ids = with_session(services, &config, &mut journal, |session, _| {
                 session.clear()
             })?;
             write!(out, "{}", report::reset_done(&ids))?;
@@ -157,7 +167,7 @@ fn execute(
         Command::Run => {
             let interval = Duration::from_secs(u64::from(config.scan_interval_minutes) * 60);
             let mut host = DaemonHost {
-                connector,
+                services,
                 config: &config,
                 journal: &mut journal,
                 sleep: runtime.sleep,
@@ -171,13 +181,13 @@ fn execute(
 /// `check` : configuration, Home Assistant, puis relevé simulé.
 fn check(
     config: &Config,
-    connector: &mut dyn Connector,
+    services: Services<'_>,
     out: &mut dyn Write,
     journal: &mut Journal<'_>,
 ) -> Result<i32, Error> {
     writeln!(out, "Configuration valide.")?;
     write!(out, "{}", config.report())?;
-    with_session(connector, config, journal, |session, connector| {
+    with_session(services, config, journal, |session, connector| {
         let known = session.last_known_days()?;
         writeln!(out)?;
         write!(
@@ -194,11 +204,11 @@ fn check(
 
 /// Un relevé complet, journalisé : connexion à HA, relevé, fermeture.
 fn reading(
-    connector: &mut dyn Connector,
+    services: Services<'_>,
     config: &Config,
     journal: &mut Journal<'_>,
 ) -> Result<Report, Error> {
-    let done = with_session(connector, config, journal, |session, connector| {
+    let done = with_session(services, config, journal, |session, connector| {
         session.sync(connector, Mode::Apply)
     })?;
     for (level, line) in report::reading(&done) {
@@ -211,12 +221,13 @@ fn reading(
 /// exécute `work`, puis la ferme. Un échec de la fermeture est journalisé
 /// mais ne change pas le résultat.
 fn with_session<T>(
-    connector: &mut dyn Connector,
+    services: Services<'_>,
     config: &Config,
     journal: &mut Journal<'_>,
     work: impl FnOnce(&mut Session<'_>, &mut dyn Connector) -> Result<T, Error>,
 ) -> Result<T, Error> {
-    let mut session = Session::open(connector, config)?;
+    let Services { connector, now } = services;
+    let mut session = Session::open(connector, config, now())?;
     for (level, line) in report::connected(session.info()) {
         journal.log(level, &line);
     }
@@ -230,9 +241,25 @@ fn with_session<T>(
     result
 }
 
+/// Connexions et horloge, prêtées à une commande.
+struct Services<'a> {
+    connector: &'a mut dyn Connector,
+    now: fn() -> Timestamp,
+}
+
+impl Services<'_> {
+    /// Nouvel emprunt, pour une session de plus (un relevé de `run`).
+    fn reborrow(&mut self) -> Services<'_> {
+        Services {
+            connector: &mut *self.connector,
+            now: self.now,
+        }
+    }
+}
+
 /// Branchement de la boucle du démon sur les vrais relevés.
 struct DaemonHost<'a, 'w> {
-    connector: &'a mut dyn Connector,
+    services: Services<'a>,
     config: &'a Config,
     journal: &'a mut Journal<'w>,
     sleep: &'a mut dyn FnMut(Duration),
@@ -240,7 +267,7 @@ struct DaemonHost<'a, 'w> {
 
 impl daemon::Host for DaemonHost<'_, '_> {
     fn reading(&mut self) -> Result<Report, Error> {
-        reading(self.connector, self.config, self.journal)
+        reading(self.services.reborrow(), self.config, self.journal)
     }
 
     fn sleep(&mut self, duration: Duration) {
@@ -354,6 +381,7 @@ mod tests {
             connector,
             sleep: &mut sleep,
             max_cycles: Some(3),
+            now: fixed_now,
         };
         let code = run(args(list), config, runtime, &mut out, &mut err);
         (
@@ -363,11 +391,17 @@ mod tests {
         )
     }
 
-    /// Relevés publiés par GRDF : les `days` derniers jours avant aujourd'hui
-    /// (fuseau de Paris), le plus ancien d'abord.
+    /// Heure fixe des tests : le 16 novembre 2026 à 23 h 30 à Paris, juste
+    /// avant minuit, sans qu'aucun test dépende de l'heure réelle.
+    fn fixed_now() -> Timestamp {
+        "2026-11-16T22:30:00Z".parse().unwrap()
+    }
+
+    /// Relevés publiés par GRDF : les `days` derniers jours avant le
+    /// 16 novembre 2026 (aujourd'hui pour [`fixed_now`]), le plus ancien
+    /// d'abord.
     fn published(days: i64) -> Vec<DailyReading> {
-        let tz = jiff::tz::TimeZone::get("Europe/Paris").unwrap();
-        let today = jiff::Timestamp::now().to_zoned_datetime(tz).date();
+        let today = jiff::civil::date(2026, 11, 16);
         (1..=days)
             .rev()
             .map(|n| DailyReading {

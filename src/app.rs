@@ -122,16 +122,20 @@ pub struct Session<'c> {
 }
 
 impl<'c> Session<'c> {
-    /// Se connecte à Home Assistant et calcule la date du jour dans son
-    /// fuseau.
-    pub fn open(connector: &mut dyn Connector, config: &'c Config) -> Result<Session<'c>, Error> {
+    /// Se connecte à Home Assistant et calcule la date du jour de l'instant
+    /// `now` dans son fuseau.
+    pub fn open(
+        connector: &mut dyn Connector,
+        config: &'c Config,
+        now: Timestamp,
+    ) -> Result<Session<'c>, Error> {
         let ha = connector.home_assistant(config)?;
         let tz = ha.time_zone().clone();
         let info = HaInfo {
             version: ha.version().to_owned(),
             time_zone: tz.iana_name().unwrap_or("sans nom").to_owned(),
             older_than_reference: crate::ha::older_than_reference(ha.version()),
-            today: Timestamp::now().to_zoned_datetime(tz).date(),
+            today: now.to_zoned_datetime(tz).date(),
         };
         Ok(Session { config, ha, info })
     }
@@ -417,6 +421,11 @@ mod tests {
             .unwrap()
     }
 
+    /// Heure fixe des tests : le 16 novembre 2026 à midi (UTC).
+    fn now() -> Timestamp {
+        "2026-11-16T12:00:00Z".parse().unwrap()
+    }
+
     fn reading(day: Date, kwh: i64) -> DailyReading {
         DailyReading {
             day,
@@ -433,13 +442,14 @@ mod tests {
             time_zone: "America/New_York".into(),
             ..Script::default()
         });
-        let session = Session::open(&mut connector, &config).unwrap();
+        // 2 h du matin à Paris le 17, encore le 16 à New York.
+        let now: Timestamp = "2026-11-17T01:00:00Z".parse().unwrap();
+        let session = Session::open(&mut connector, &config, now).unwrap();
         let info = session.info().clone();
         assert_eq!(info.version, "2026.8.3");
         assert_eq!(info.time_zone, "America/New_York");
         assert_eq!(info.older_than_reference, Some(true));
-        let tz = TimeZone::get("America/New_York").unwrap();
-        assert_eq!(info.today, Timestamp::now().to_zoned_datetime(tz).date());
+        assert_eq!(info.today, jiff::civil::date(2026, 11, 16));
         session.close().unwrap();
         assert_eq!(connector.seen.borrow().ha_closes, 1);
     }
@@ -448,7 +458,7 @@ mod tests {
     fn sync_uses_the_configuration_and_a_new_grdf_client() {
         let config = test_config();
         let mut connector = FakeConnector::default();
-        let mut session = Session::open(&mut connector, &config).unwrap();
+        let mut session = Session::open(&mut connector, &config, now()).unwrap();
         let today = session.info().today;
         let yesterday = today.yesterday().unwrap();
         connector.script.published = vec![reading(yesterday, 7)];
@@ -484,7 +494,7 @@ mod tests {
     fn clear_erases_both_statistics() {
         let config = test_config();
         let mut connector = FakeConnector::default();
-        let mut session = Session::open(&mut connector, &config).unwrap();
+        let mut session = Session::open(&mut connector, &config, now()).unwrap();
         let ids = session.clear().unwrap();
         assert_eq!(
             ids,
@@ -515,7 +525,7 @@ mod tests {
         config.grdf_base_url = "http://127.0.0.1:1".into();
         config.grdf_login_url = "http://127.0.0.1:1".into();
         let mut grdf = Network.grdf(&config).unwrap();
-        let today = Timestamp::now().to_zoned_datetime(TimeZone::UTC).date();
+        let today = jiff::civil::date(2026, 11, 16);
         match grdf.daily_readings(today, today) {
             Err(Error::Http(m)) => assert!(m.starts_with("GRDF injoignable ("), "{m}"),
             other => panic!("{other:?}"),
