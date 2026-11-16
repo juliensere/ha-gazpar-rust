@@ -25,6 +25,10 @@ Le fichier complet ne contient **aucune** valeur décimale de volume ni d'énerg
 
 Reprise du relevé écrit en dur dans le test `test_informative_readings_use_gas_day` de `tests/test_jsonparser.py` (PyGazpar 1.4.0), seul relevé informatif à valeurs décimales des tests de PyGazpar (0,28 m³, 3,16 kWh). Seul le PCE est remplacé par `98765432109876`.
 
+## `okta_identify_response.json`
+
+Copie sans modification de `tests/resources/okta_identify_response.json` de PyGazpar 1.4.0 : vraie réponse de l'étape `identify` d'Okta pour un compte GRDF (capturée par PyGazpar le 2026-10-11), où PyGazpar a déjà remplacé le `stateHandle`, l'e-mail et le nonce OAuth par des valeurs factices. Elle n'a **pas** de `stateHandle` à la racine : il n'apparaît que dans les formulaires des étapes proposées. Utilisée par les tests de `src/grdf/auth.rs` et servie, adaptée, par le faux serveur GRDF (`tests/support/fake_grdf.rs`).
+
 ## Origine des valeurs attendues
 
 Dans `src/readings.rs` (tests `pygazpar_*`), chaque valeur attendue indique sa source :
