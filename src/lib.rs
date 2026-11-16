@@ -21,6 +21,7 @@ pub mod log;
 
 pub mod cli;
 pub mod config;
+pub mod config_file;
 pub mod domain;
 pub mod error;
 pub mod grdf;
