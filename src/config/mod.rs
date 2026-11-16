@@ -56,14 +56,10 @@ use crate::domain::{Measure, StatisticId};
 use crate::log::Level;
 use crate::secret::Secret;
 
-pub use loader::{
-    CommandLine, FileSystem, Loaded, Origin, RealFileSystem, Source, environment_from, load,
-    load_from_process,
-};
-pub use options::{
-    DEV_VARIABLES, OPTIONS, OptionSpec, ParameterTarget, file_keys, parameter, parameters,
-};
-pub use validate::HA_WEBSOCKET_PATH;
+pub use loader::{CommandLine, Loaded, Origin, Source, load_from_process};
+#[cfg(test)]
+pub use loader::{FileSystem, load};
+pub use options::{OPTIONS, ParameterTarget, parameter, parameters};
 
 /// Adresse de Mon Espace GRDF.
 pub const DEFAULT_GRDF_BASE_URL: &str = "https://monespace.grdf.fr";

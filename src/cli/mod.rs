@@ -26,8 +26,8 @@
 //!
 //! Dépendances : `app`, `daemon`, `config`, `sync` (types), `log`, `error`.
 
-pub mod args;
-pub mod report;
+pub(crate) mod args;
+pub(crate) mod report;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -43,13 +43,13 @@ use crate::sync::{Mode, Report};
 use crate::{HA_REFERENCE, VERSION};
 
 use args::USAGE_HINT;
-pub use args::{Command, Invocation, Parsed, parse_args, usage};
+pub(crate) use args::{Command, Invocation, Parsed, parse_args, usage};
 
 /// Code de sortie de `reset` sans `--yes` (MANUEL.md §5).
-pub const EXIT_RESET_NOT_CONFIRMED: i32 = 2;
+pub(crate) const EXIT_RESET_NOT_CONFIRMED: i32 = 2;
 
 /// Ce que les commandes utilisent du monde extérieur, hors configuration.
-pub struct Runtime<'a> {
+pub(crate) struct Runtime<'a> {
     /// Ouvre les connexions à Home Assistant et à GRDF.
     pub connector: &'a mut dyn Connector,
     /// Attente entre deux relevés de `run`.
@@ -77,7 +77,7 @@ pub fn main(args: impl IntoIterator<Item = OsString>) -> i32 {
 /// Exécute la ligne de commande avec un chargement de configuration, des
 /// services et des sorties injectés (testable sans environnement, sans
 /// réseau ni terminal).
-pub fn run(
+pub(crate) fn run(
     args: impl IntoIterator<Item = OsString>,
     load_config: impl FnOnce(&CommandLine) -> Loaded,
     runtime: Runtime<'_>,

@@ -14,5 +14,5 @@
 
 pub mod api;
 pub mod auth;
-pub mod cookies;
-pub mod http;
+pub(crate) mod cookies;
+pub(crate) mod http;

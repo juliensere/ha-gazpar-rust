@@ -35,7 +35,6 @@ use crate::domain::{Measure, StatisticId};
 use crate::error::Error;
 use crate::grdf::api::{GrdfClient, GrdfSettings};
 use crate::grdf::auth::Credentials;
-use crate::ha::server;
 use crate::ha::stats::HomeAssistantStore;
 use crate::ha::websocket::{Timeouts, WebSocket};
 use crate::ports::{ConsumptionSource, StatisticsStore};
@@ -131,7 +130,7 @@ impl<'c> Session<'c> {
         let info = HaInfo {
             version: ha.version().to_owned(),
             time_zone: tz.iana_name().unwrap_or("sans nom").to_owned(),
-            older_than_reference: server::is_older_than(ha.version(), crate::HA_REFERENCE),
+            older_than_reference: crate::ha::older_than_reference(ha.version()),
             today: Timestamp::now().to_zoned_datetime(tz).date(),
         };
         Ok(Session { config, ha, info })

@@ -24,7 +24,8 @@
 //!   plafonnée à [`MAX_MESSAGE_LEN`], vérifiée avant toute allocation.
 //! - La logique de trame est générique sur `Read + Write` et se teste avec des
 //!   tampons en mémoire ; seul [`connect`] touche au réseau. [`Role::Server`]
-//!   n'existe que pour le faux Home Assistant des tests.
+//!   n'existe que pour le faux Home Assistant des tests, qui l'atteint par
+//!   [`crate::testing`].
 //!
 //! Dépendances : `url`, `error` et la bibliothèque standard.
 
@@ -37,7 +38,7 @@ use crate::error::Error;
 use crate::url::Url;
 
 /// Taille maximale d'un message reçu, fragments réunis (16 Mio).
-pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
+const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 /// Taille maximale de l'en-tête HTTP de la réponse à la poignée de main.
 const MAX_HANDSHAKE_LEN: usize = 16 * 1024;
 /// Identifiant fixe de la RFC 6455 §1.3 pour calculer `Sec-WebSocket-Accept`.
@@ -74,7 +75,7 @@ pub enum Role {
 
 /// Code d'opération d'une trame (RFC 6455 §5.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpCode {
+enum OpCode {
     Continuation = 0x0,
     Text = 0x1,
     Binary = 0x2,
@@ -103,14 +104,14 @@ impl OpCode {
 
 /// Trame reçue, charge utile déjà démasquée.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Frame {
-    pub fin: bool,
-    pub opcode: OpCode,
-    pub payload: Vec<u8>,
+struct Frame {
+    fin: bool,
+    opcode: OpCode,
+    payload: Vec<u8>,
 }
 
 /// Encode une trame ; `mask` est la clé de masquage (obligatoire côté client).
-pub fn encode_frame(fin: bool, opcode: OpCode, payload: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
+fn encode_frame(fin: bool, opcode: OpCode, payload: &[u8], mask: Option<[u8; 4]>) -> Vec<u8> {
     let len = payload.len();
     let mut out = Vec::with_capacity(len + 14);
     out.push(u8::from(fin) << 7 | opcode as u8);
@@ -139,7 +140,7 @@ pub fn encode_frame(fin: bool, opcode: OpCode, payload: &[u8], mask: Option<[u8;
 }
 
 /// Lit une trame. `max_len` borne sa charge utile, avant toute allocation.
-pub fn read_frame<R: Read>(r: &mut R, role: Role, max_len: usize) -> Result<Frame, Error> {
+fn read_frame<R: Read>(r: &mut R, role: Role, max_len: usize) -> Result<Frame, Error> {
     let mut head = [0u8; 2];
     if !read_first_byte(r, &mut head[0])? {
         return Err(Error::Io(
@@ -227,7 +228,8 @@ impl<S: Read + Write> WebSocket<S> {
     }
 
     /// Change le plafond de taille d'un message reçu.
-    pub fn with_max_message(mut self, max: usize) -> Self {
+    #[cfg(test)]
+    fn with_max_message(mut self, max: usize) -> Self {
         self.max_message = max;
         self
     }

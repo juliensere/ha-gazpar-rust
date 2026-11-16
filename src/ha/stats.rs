@@ -54,7 +54,7 @@ impl HomeAssistantStore {
 
 impl<T: Transport> HomeAssistantStore<T> {
     /// Sur une session authentifiée : lit le fuseau de HA (`get_config`).
-    pub fn open(mut session: Session<T>) -> Result<Self, Error> {
+    pub(crate) fn open(mut session: Session<T>) -> Result<Self, Error> {
         let tz = server::fetch_time_zone(&mut session)?;
         debug!(
             "fuseau horaire de Home Assistant : {}",
@@ -63,8 +63,8 @@ impl<T: Transport> HomeAssistantStore<T> {
         Ok(HomeAssistantStore::new(session, tz))
     }
 
-    /// Sur une session authentifiée, avec un fuseau donné (tests).
-    pub fn new(session: Session<T>, tz: TimeZone) -> Self {
+    /// Sur une session authentifiée, avec un fuseau déjà lu.
+    fn new(session: Session<T>, tz: TimeZone) -> Self {
         HomeAssistantStore { session, tz }
     }
 
@@ -76,13 +76,6 @@ impl<T: Transport> HomeAssistantStore<T> {
     /// Version de Home Assistant annoncée à l'authentification.
     pub fn ha_version(&self) -> &str {
         self.session.ha_version()
-    }
-
-    /// Home Assistant est-il plus ancien que la version de référence
-    /// ([`crate::HA_REFERENCE`]) ? `None` si sa version est illisible.
-    /// À journaliser par l'appelant.
-    pub fn older_than_reference(&self) -> Option<bool> {
-        server::is_older_than(self.ha_version(), crate::HA_REFERENCE)
     }
 
     /// Ferme la connexion proprement.
@@ -526,7 +519,7 @@ mod tests {
         .unwrap();
         let mut s = HomeAssistantStore::open(session).unwrap();
         assert_eq!(s.time_zone().iana_name(), Some("America/New_York"));
-        assert_eq!(s.older_than_reference(), Some(false));
+        assert_eq!(crate::ha::older_than_reference(s.ha_version()), Some(false));
         s.import(&energy(), Measure::Energy, &[point(date(2026, 7, 1), 1, 1)])
             .unwrap();
         let sent = commands(&s);

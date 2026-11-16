@@ -28,7 +28,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ha_gazpar::Error;
-use ha_gazpar::ha::websocket::{Role, WebSocket, accept_key};
+use ha_gazpar::testing::{Role, WebSocket, accept_key};
 use jiff::Timestamp;
 use serde_json::{Map, Value, json};
 

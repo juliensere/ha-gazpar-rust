@@ -37,14 +37,14 @@ use crate::error::Error;
 use crate::url::Url;
 
 /// `User-Agent` envoyé, celui de PyGazpar.
-pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Taille maximale d'un corps de réponse. Un an de relevés quotidiens pèse
 /// environ 260 Ko.
-pub const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 /// Nombre maximal de redirections suivies pour une requête.
-pub const MAX_REDIRECTS: usize = 10;
+const MAX_REDIRECTS: usize = 10;
 
 /// Hôtes vers lesquels le client accepte d'envoyer une requête, déduits des
 /// adresses configurées (Mon Espace GRDF et connexion).
@@ -285,9 +285,8 @@ impl HttpClient {
     }
 
     /// Pose un cookie de session pour l'hôte de `url`.
-    pub fn set_cookie(&mut self, name: &str, value: &str, url: &str) -> Result<(), Error> {
-        self.jar.insert(name, value, &Url::http(url)?);
-        Ok(())
+    pub fn set_cookie(&mut self, name: &str, value: &str, url: &Url) {
+        self.jar.insert(name, value, url);
     }
 
     fn execute(
@@ -865,9 +864,11 @@ mod tests {
             raw(200, &[("Set-Cookie", "sid=1; Max-Age=0")], ""),
             raw(200, &[], ""),
         ]);
-        client
-            .set_cookie("ln", "jean@example.org", "https://h.fr/")
-            .unwrap();
+        client.set_cookie(
+            "ln",
+            "jean@example.org",
+            &Url::http("https://h.fr/").unwrap(),
+        );
         client.get("https://h.fr/", &[], &[]).unwrap();
         client.get("https://h.fr/", &[], &[]).unwrap();
         let seen = seen.borrow();

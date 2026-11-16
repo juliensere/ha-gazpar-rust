@@ -194,10 +194,6 @@ impl Url {
         })
     }
 
-    pub fn scheme(&self) -> Scheme {
-        self.scheme
-    }
-
     pub fn is_https(&self) -> bool {
         self.scheme == Scheme::Https
     }
@@ -437,7 +433,6 @@ mod tests {
     fn parse_parts() {
         let u = url("HTTPS://MonEspace.GRDF.fr:8443/api/e-conso?x=1#frag");
         assert!(u.is_https());
-        assert_eq!(u.scheme(), Scheme::Https);
         assert_eq!(u.host(), "monespace.grdf.fr");
         assert_eq!(u.path(), "/api/e-conso");
         assert_eq!(u.full(), "https://monespace.grdf.fr:8443/api/e-conso?x=1");
@@ -467,7 +462,7 @@ mod tests {
     #[test]
     fn websocket_family() {
         let u = Url::ws("WS://HA.local:8123/api/websocket").unwrap();
-        assert_eq!(u.scheme(), Scheme::Ws);
+        assert!(!u.is_https());
         assert_eq!(u.full(), "ws://ha.local:8123/api/websocket");
         assert_eq!(u.path_and_query(), "/api/websocket");
         assert_eq!(Url::ws("ws://h?x=1").unwrap().path_and_query(), "/?x=1");

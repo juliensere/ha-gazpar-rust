@@ -37,15 +37,15 @@ use crate::url::Url;
 /// Tentatives au plus pour un appel (PyGazpar : 10).
 pub const MAX_ATTEMPTS: u32 = 4;
 /// Premier délai de reprise, doublé à chaque tentative.
-pub const RETRY_DELAY: Duration = Duration::from_secs(3);
-pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(15);
+const RETRY_DELAY: Duration = Duration::from_secs(3);
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(15);
 /// Plafond d'un `Retry-After`.
-pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 /// Longueur maximale d'une fenêtre de relevés, en jours (bornes comprises).
 pub const MAX_WINDOW_DAYS: i32 = 365;
 
-pub const PCE_LIST_PATH: &str = "/e-conso/pce";
-pub const INFORMATIVE_PATH: &str = "/e-conso/pce/consommation/informatives";
+const PCE_LIST_PATH: &str = "/e-conso/pce";
+const INFORMATIVE_PATH: &str = "/e-conso/pce/consommation/informatives";
 
 /// Fonction d'attente, `std::thread::sleep` en production.
 pub type Sleeper = Box<dyn FnMut(Duration)>;
@@ -212,7 +212,7 @@ impl ConsumptionSource for GrdfClient {
 /// Fenêtres `(début, fin)` d'au plus [`MAX_WINDOW_DAYS`] jours bornes
 /// comprises, couvrant `from..=to` ; chaque fenêtre commence le dernier jour
 /// de la précédente. Vide si `from > to`.
-pub fn windows(from: Date, to: Date) -> Vec<(Date, Date)> {
+fn windows(from: Date, to: Date) -> Vec<(Date, Date)> {
     let mut out = Vec::new();
     let mut start = from;
     while start <= to {
@@ -230,7 +230,7 @@ pub fn windows(from: Date, to: Date) -> Vec<(Date, Date)> {
 
 /// Trie, garde un relevé par jour (celui qui a le plus de valeurs, à défaut
 /// le dernier reçu) et ne garde que `from..=to`.
-pub fn merge(mut readings: Vec<DailyReading>, from: Date, to: Date) -> Vec<DailyReading> {
+fn merge(mut readings: Vec<DailyReading>, from: Date, to: Date) -> Vec<DailyReading> {
     readings.retain(|r| (from..=to).contains(&r.day));
     readings.sort_by_key(|r| r.day);
     let filled =
@@ -250,14 +250,14 @@ pub fn merge(mut readings: Vec<DailyReading>, from: Date, to: Date) -> Vec<Daily
 }
 
 /// Délai avant la tentative suivante : 3, 6, 12 puis 15 s au plus.
-pub fn backoff(attempt: u32) -> Duration {
+fn backoff(attempt: u32) -> Duration {
     let factor = 2_u32.saturating_pow(attempt.saturating_sub(1));
     RETRY_DELAY.saturating_mul(factor).min(MAX_RETRY_DELAY)
 }
 
 /// Délai demandé par `Retry-After` en secondes (pas les dates HTTP),
 /// plafonné à 60 s ; `None` s'il est absent ou illisible.
-pub fn retry_after(header: Option<&str>) -> Option<Duration> {
+fn retry_after(header: Option<&str>) -> Option<Duration> {
     let seconds: f64 = header?.trim().parse().ok()?;
     if !seconds.is_finite() {
         return None;
@@ -269,14 +269,14 @@ pub fn retry_after(header: Option<&str>) -> Option<Duration> {
 
 /// Session refusée : 401, ou page HTML servie hors de l'API (redirection
 /// vers la page de connexion).
-pub fn is_session_expired(response: &Response, api_prefix: &str) -> bool {
+fn is_session_expired(response: &Response, api_prefix: &str) -> bool {
     response.status == 401
         || (response.is_html() && !response.final_url.redacted().starts_with(api_prefix))
 }
 
 /// Suite à donner à une tentative.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Decision {
+enum Decision {
     Accept,
     Relogin,
     Retry { delay: Duration, reason: String },
@@ -285,7 +285,7 @@ pub enum Decision {
 
 /// Choix après une tentative, dans l'ordre d'`api_client.py` : erreur
 /// réseau, session expirée, 429, HTML, statut autre que 200.
-pub fn decide(
+fn decide(
     outcome: &Result<Response, Error>,
     path: &str,
     api_prefix: &str,
@@ -339,7 +339,7 @@ pub fn decide(
 }
 
 /// `idObject` de chaque PCE du compte.
-pub fn parse_pce_list(body: &str) -> Result<Vec<String>, Error> {
+fn parse_pce_list(body: &str) -> Result<Vec<String>, Error> {
     let bad = || Error::Grdf("liste des PCE : réponse inattendue".to_owned());
     let value: Value = serde_json::from_str(body).map_err(|_| bad())?;
     let items = value.as_array().ok_or_else(bad)?;

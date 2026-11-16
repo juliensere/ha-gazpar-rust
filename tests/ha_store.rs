@@ -12,7 +12,7 @@ use std::time::Duration;
 use ha_gazpar::Error;
 use ha_gazpar::domain::{Measure, Quantity, StatPoint, StatisticId};
 use ha_gazpar::ha::stats::{HomeAssistantStore, IMPORT_BATCH_SIZE};
-use ha_gazpar::ha::websocket::Timeouts;
+use ha_gazpar::ha::{Timeouts, older_than_reference};
 use ha_gazpar::ports::StatisticsStore;
 use ha_gazpar::secret::Secret;
 use jiff::Timestamp;
@@ -59,7 +59,7 @@ fn import_read_replace_clear() {
     let mut store = connect(&ha, TOKEN).unwrap();
     assert_eq!(store.ha_version(), VERSION);
     assert_eq!(store.time_zone().iana_name(), Some("Europe/Paris"));
-    assert_eq!(store.older_than_reference(), Some(false));
+    assert_eq!(older_than_reference(store.ha_version()), Some(false));
     let id = energy();
     // Dix jours autour du passage à l'heure d'été (29 mars 2026).
     let (from, to) = (date(2026, 3, 25), date(2026, 4, 3));

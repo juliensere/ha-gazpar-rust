@@ -74,12 +74,12 @@ pub fn init(level: Level) -> bool {
 }
 
 /// Niveau courant (`info` tant que [`init`] n'a pas été appelé).
-pub fn level() -> Level {
+fn level() -> Level {
     LEVEL.get().copied().unwrap_or(Level::Info)
 }
 
 /// Le message de ce niveau serait-il écrit ?
-pub fn enabled(level: Level) -> bool {
+fn enabled(level: Level) -> bool {
     level <= self::level()
 }
 

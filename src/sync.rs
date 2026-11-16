@@ -183,6 +183,7 @@ pub struct Report {
 
 impl Report {
     /// Nombre total de points importés, toutes mesures confondues.
+    #[cfg(test)]
     pub fn imported(&self) -> usize {
         self.measures.iter().map(MeasureReport::count).sum()
     }

@@ -33,12 +33,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use ha_gazpar::domain::{Measure, Quantity, StatPoint, StatisticId};
-use ha_gazpar::ha::server;
-use ha_gazpar::ha::session::Session;
 use ha_gazpar::ha::stats::HomeAssistantStore;
-use ha_gazpar::ha::websocket::{self, Timeouts, WebSocket};
+use ha_gazpar::ha::{Timeouts, older_than_reference};
 use ha_gazpar::ports::StatisticsStore;
 use ha_gazpar::secret::Secret;
+use ha_gazpar::testing::{self, Session, WebSocket};
 use jiff::Timestamp;
 use jiff::civil::{Date, date};
 use serde_json::{Value, json};
@@ -86,7 +85,7 @@ fn store(env: &Env) -> HomeAssistantStore {
 
 /// Session brute, pour observer les réponses de HA telles quelles.
 fn session(env: &Env) -> Session<WebSocket<TcpStream>> {
-    let ws = websocket::connect(&env.url, timeouts()).unwrap();
+    let ws = testing::connect(&env.url, timeouts()).unwrap();
     Session::authenticate(ws, &env.token).unwrap()
 }
 
@@ -252,7 +251,7 @@ fn version_is_read_at_authentication() {
     let Some(env) = env() else { return };
     let store = store(&env);
     let version = store.ha_version().to_owned();
-    let older = store.older_than_reference();
+    let older = older_than_reference(store.ha_version());
     store.close().unwrap();
     assert_eq!(
         older,
@@ -285,7 +284,7 @@ fn time_zone_is_read_from_get_config() {
     s.close().unwrap();
     eprintln!("get_config : time_zone = {}", config["time_zone"]);
     assert_eq!(config["time_zone"], "Europe/Paris", "{config}");
-    let tz = server::time_zone_from_config(&config).unwrap();
+    let tz = testing::time_zone_from_config(&config).unwrap();
     assert_eq!(tz.iana_name(), Some("Europe/Paris"));
     // Et par le client complet.
     let store = HomeAssistantStore::connect(&env.url, &env.token, timeouts()).unwrap();

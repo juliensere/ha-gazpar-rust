@@ -25,22 +25,40 @@
 #[macro_use]
 pub mod log;
 
-pub mod app;
+// API publique : ce dont `main.rs` et les essais d'intégration (`tests/`)
+// ont besoin, rien de plus. Le reste est interne à la bibliothèque.
 pub mod cli;
-pub mod config;
-pub mod config_file;
-pub mod daemon;
 pub mod domain;
 pub mod error;
 pub mod grdf;
 pub mod ha;
 pub mod ports;
-pub mod readings;
 pub mod secret;
-pub mod sync;
-pub mod url;
+
+pub(crate) mod app;
+pub(crate) mod config;
+pub(crate) mod config_file;
+pub(crate) mod daemon;
+pub(crate) mod readings;
+pub(crate) mod sync;
+pub(crate) mod url;
 
 pub use error::Error;
+
+/// Frontière réservée aux essais d'intégration (`tests/`) : les couches du
+/// client Home Assistant dont ont besoin le faux Home Assistant de
+/// `tests/support/` (WebSocket côté serveur) et les essais contre un vrai
+/// Home Assistant (session brute, lecture du fuseau). **Ne fait pas partie
+/// de l'API** : le programme lui-même n'utilise que `ha::stats`.
+///
+/// Rien ici n'est une dépendance de plus : ce sont des ré-exportations de
+/// modules internes.
+#[doc(hidden)]
+pub mod testing {
+    pub use crate::ha::server::time_zone_from_config;
+    pub use crate::ha::session::{Session, Transport};
+    pub use crate::ha::websocket::{Role, WebSocket, accept_key, connect};
+}
 
 /// Version du programme, tirée de `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

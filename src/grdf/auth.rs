@@ -61,20 +61,20 @@ use crate::error::Error;
 use crate::secret::{self, Secret};
 use crate::url::Url;
 
-pub const IDENTIFY_PATH: &str = "/idp/idx/identify";
-pub const CHALLENGE_PATH: &str = "/idp/idx/challenge/answer";
+const IDENTIFY_PATH: &str = "/idp/idx/identify";
+const CHALLENGE_PATH: &str = "/idp/idx/challenge/answer";
 const OKTA_ACCEPT: &str = "application/json; okta-version=1.0.0";
 
 /// Clés `i18n` d'Okta qui signifient un refus des identifiants : mot de
 /// passe faux (`incorrectPassword` ; `errors.E0000004`, « Authentication
 /// failed ») ou compte inconnu (`idx.unknown.user`).
-pub const REJECTION_KEYS: [&str; 3] = ["incorrectPassword", "errors.E0000004", "idx.unknown.user"];
+const REJECTION_KEYS: [&str; 3] = ["incorrectPassword", "errors.E0000004", "idx.unknown.user"];
 /// Clés `i18n` d'Okta d'une session de connexion expirée : passager.
-pub const EXPIRED_KEYS: [&str; 1] = ["idx.session.expired"];
+const EXPIRED_KEYS: [&str; 1] = ["idx.session.expired"];
 
 /// Étape du parcours Okta qui a répondu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Step {
+enum Step {
     /// `POST /idp/idx/identify` (e-mail).
     Identify,
     /// `POST /idp/idx/challenge/answer` (mot de passe).
@@ -104,7 +104,7 @@ pub struct Credentials {
 ///
 /// `base_url` et `login_url` sans `/` final (ex. `https://monespace.grdf.fr`,
 /// `https://connexion.grdf.fr`).
-pub fn login(
+pub(crate) fn login(
     http: &mut HttpClient,
     base_url: &str,
     login_url: &str,
@@ -136,8 +136,8 @@ pub fn login(
         })?;
 
     debug!("connexion 2/5 : cookie ln");
-    http.set_cookie("ln", username, login_url)?;
-    http.set_cookie("ln", username, base_url)?;
+    http.set_cookie("ln", username, &Url::http(login_url)?);
+    http.set_cookie("ln", username, &Url::http(base_url)?);
 
     debug!("connexion 3/5 : identification");
     let okta_headers = [
@@ -237,7 +237,7 @@ fn refused(step: Step, status: u16, body: &str, secrets: &[&Secret]) -> Error {
 /// La réponse d'Okta à `step` (statut et corps) refuse-t-elle clairement
 /// les identifiants ? Règle détaillée en tête du module ; dans le doute,
 /// `false` (échec passager).
-pub fn credentials_rejected(step: Step, status: u16, body: &str) -> bool {
+fn credentials_rejected(step: Step, status: u16, body: &str) -> bool {
     if !(400..500).contains(&status) || status == 429 {
         return false;
     }
@@ -269,7 +269,7 @@ fn message_keys(body: &Value) -> Vec<&str> {
 }
 
 /// `"stateToken" : "…"` dans la page de connexion, avec `\x2D` → `-`.
-pub fn extract_state_token(html: &str) -> Option<String> {
+fn extract_state_token(html: &str) -> Option<String> {
     const KEY: &str = "\"stateToken\"";
     let mut rest = html;
     while let Some(i) = rest.find(KEY) {
@@ -288,16 +288,16 @@ pub fn extract_state_token(html: &str) -> Option<String> {
     None
 }
 
-pub fn identify_payload(username: &str, state_token: &str) -> Value {
+fn identify_payload(username: &str, state_token: &str) -> Value {
     json!({"identifier": username, "stateHandle": state_token})
 }
 
-pub fn challenge_payload(password: &str, state_handle: &str) -> Value {
+fn challenge_payload(password: &str, state_handle: &str) -> Value {
     json!({"credentials": {"passcode": password}, "stateHandle": state_handle})
 }
 
 /// Étape IDX proposée sous ce nom (`remediation.value[].name`).
-pub fn find_remediation<'a>(body: &'a Value, name: &str) -> Option<&'a Value> {
+fn find_remediation<'a>(body: &'a Value, name: &str) -> Option<&'a Value> {
     body.get("remediation")?
         .get("value")?
         .as_array()?
@@ -307,7 +307,7 @@ pub fn find_remediation<'a>(body: &'a Value, name: &str) -> Option<&'a Value> {
 
 /// `stateHandle` de la réponse d'`identify` : à la racine, sinon le champ
 /// `stateHandle` du formulaire de l'étape `challenge-authenticator`.
-pub fn read_state_handle(body: &Value) -> Option<String> {
+fn read_state_handle(body: &Value) -> Option<String> {
     let non_empty = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
     if let Some(handle) = body.get("stateHandle").and_then(non_empty) {
         return Some(handle);
@@ -325,7 +325,7 @@ pub fn read_state_handle(body: &Value) -> Option<String> {
 /// autre adresse que celle où le mot de passe est envoyé (diagnostic de
 /// PyGazpar, ticket gazpar2haws #118). Noms d'étapes et adresses sans
 /// requête seulement.
-pub fn check_remediation(body: &Value, expected_href: &str) -> Option<String> {
+fn check_remediation(body: &Value, expected_href: &str) -> Option<String> {
     let Some(challenge) = find_remediation(body, "challenge-authenticator") else {
         let offered: Vec<&str> = body
             .get("remediation")
@@ -360,7 +360,7 @@ pub fn check_remediation(body: &Value, expected_href: &str) -> Option<String> {
 }
 
 /// `success.href` de la réponse au mot de passe.
-pub fn read_success_href(body: &Value) -> Option<String> {
+fn read_success_href(body: &Value) -> Option<String> {
     body.get("success")?
         .get("href")?
         .as_str()
@@ -370,7 +370,7 @@ pub fn read_success_href(body: &Value) -> Option<String> {
 
 /// `success.href` ne doit mener qu'à un hôte autorisé ; l'erreur ne nomme
 /// que l'hôte (la requête porte un jeton).
-pub fn check_success_href(href: &str, allowed: &AllowedHosts) -> Result<(), Error> {
+fn check_success_href(href: &str, allowed: &AllowedHosts) -> Result<(), Error> {
     let url = Url::http(href)
         .map_err(|_| Error::GrdfLogin("fin de connexion : success.href illisible".to_owned()))?;
     if allowed.allows(url.host()) {
@@ -387,7 +387,7 @@ pub fn check_success_href(href: &str, allowed: &AllowedHosts) -> Result<(), Erro
 /// Motif d'un refus d'Okta : `messages.value[].message`, sinon
 /// `errorSummary`. Jamais le reste de la réponse, qui contient le
 /// `stateHandle`. Ni expurgé ni raccourci : passer par [`reason`].
-pub fn login_error_reason(body: &str) -> String {
+fn login_error_reason(body: &str) -> String {
     let Ok(body) = serde_json::from_str::<Value>(body) else {
         return "aucun motif donné".to_owned();
     };

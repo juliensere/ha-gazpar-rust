@@ -22,7 +22,7 @@ use crate::ha::session::{Session, Transport};
 const MAX_NAME_CHARS: usize = 64;
 
 /// Demande `get_config` et renvoie le fuseau de Home Assistant.
-pub fn fetch_time_zone<T: Transport>(session: &mut Session<T>) -> Result<TimeZone, Error> {
+pub(crate) fn fetch_time_zone<T: Transport>(session: &mut Session<T>) -> Result<TimeZone, Error> {
     let config = session.command(json!({ "type": "get_config" }))?;
     time_zone_from_config(&config)
 }
@@ -47,8 +47,15 @@ pub fn time_zone_from_config(config: &Value) -> Result<TimeZone, Error> {
 /// (`AAAA.M`) ? Seuls les deux premiers nombres comptent, comparés comme
 /// des nombres (`2026.10` est postérieure à `2026.9`). `None` si l'une des
 /// deux est illisible (`inconnue`).
-pub fn is_older_than(version: &str, reference: &str) -> Option<bool> {
+fn is_older_than(version: &str, reference: &str) -> Option<bool> {
     Some(year_month(version)? < year_month(reference)?)
+}
+
+/// Home Assistant `version` est-il antérieur à la version de référence du
+/// programme ([`crate::HA_REFERENCE`]) ? Seul chemin de cette comparaison,
+/// pour `app` comme pour les essais. `None` si la version est illisible.
+pub fn older_than_reference(version: &str) -> Option<bool> {
+    is_older_than(version, crate::HA_REFERENCE)
 }
 
 /// `(année, mois)` d'une version `AAAA.M[.N…]` ; le mois peut être suivi

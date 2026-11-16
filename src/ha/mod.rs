@@ -7,13 +7,21 @@
 //! À côté, [`server`] lit le fuseau horaire de HA (`get_config`) et compare
 //! sa version à la version de référence.
 //!
+//! Seuls [`stats::HomeAssistantStore`], [`Timeouts`] et
+//! [`older_than_reference`] sont publics ; les couches `websocket`,
+//! `session` et `server` sont internes, et ce dont les essais d'intégration
+//! ont besoin passe par la frontière [`crate::testing`].
+//!
 //! Ne connaît pas `grdf`. Convertit les jours en minuit dans le fuseau de
 //! Home Assistant, lu à la connexion (et inversement).
 //!
 //! Dépendances : `domain`, `ports`, `secret`, `error`, `log`, `serde_json`,
 //! `jiff`.
 
-pub mod server;
-pub mod session;
+pub(crate) mod server;
+pub(crate) mod session;
 pub mod stats;
-pub mod websocket;
+pub(crate) mod websocket;
+
+pub use server::older_than_reference;
+pub use websocket::Timeouts;

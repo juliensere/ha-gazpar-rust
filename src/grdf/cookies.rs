@@ -71,10 +71,12 @@ impl CookieJar {
         CookieJar::default()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.cookies.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.cookies.is_empty()
     }
