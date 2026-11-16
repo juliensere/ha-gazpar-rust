@@ -17,7 +17,10 @@
 //!
 //! Puis l'API : `GET /api/e-conso/pce` et
 //! `GET /api/e-conso/pce/consommation/informatives` (jeu d'essai de PyGazpar
-//! filtré sur `dateDebut..=dateFin`, `[]` si rien).
+//! filtré sur `dateDebut..=dateFin`, `[]` si rien). Les relevés servis
+//! peuvent être remplacés ([`FakeGrdf::set_records`]) ou complétés
+//! ([`FakeGrdf::publish`], pour un jour publié ou corrigé en retard) :
+//! les essais du binaire, qui suit la vraie date du jour, s'en servent.
 //!
 //! Pannes pilotables ([`Faults`]) : 429, session expirée (401 ou redirection
 //! vers la page de connexion), page HTML d'erreur, connexion coupée,
@@ -188,6 +191,19 @@ impl FakeGrdf {
     /// Adresse de « connexion ».
     pub fn login_url(&self) -> &str {
         &self.login
+    }
+
+    /// Remplace les relevés servis (voir [`record`]).
+    pub fn set_records(&self, records: Vec<Value>) {
+        self.state.lock().unwrap().records = records;
+    }
+
+    /// Publie un relevé : remplace celui du même jour gazier, ou l'ajoute.
+    pub fn publish(&self, record: Value) {
+        let mut state = self.state.lock().unwrap();
+        let day = record["journeeGaziere"].clone();
+        state.records.retain(|r| r["journeeGaziere"] != day);
+        state.records.push(record);
     }
 
     pub fn set_faults(&self, faults: Faults) {
@@ -654,6 +670,29 @@ fn challenge(state: &mut State, request: &Request) -> Reply {
             }
         }),
     )
+}
+
+/// Relevé informatif d'un jour gazier (`AAAA-MM-JJ`), au format de GRDF ;
+/// `None` = valeur pas encore publiée (`null`).
+pub fn record(day: &str, energy_kwh: Option<f64>, volume_m3: Option<f64>) -> Value {
+    json!({
+        "coeffConversion": 11.17,
+        "dateDebutReleve": format!("{day}T06:00:00+00:00"),
+        "dateFinReleve": null,
+        "energieConsomme": energy_kwh,
+        "frequenceReleve": null,
+        "indexDebut": null,
+        "indexFin": null,
+        "journeeGaziere": day,
+        "natureReleve": "Informative Journalier",
+        "pcs": null,
+        "pta": null,
+        "qualificationReleve": if energy_kwh.is_some() { "Mesuré" } else { "Absence de Données" },
+        "status": null,
+        "temperature": null,
+        "volumeBrutConsomme": volume_m3,
+        "volumeConverti": null
+    })
 }
 
 /// `http://127.0.0.1:port` devenu `http://localhost:port` si `foreign`.
