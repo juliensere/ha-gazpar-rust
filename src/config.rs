@@ -61,7 +61,8 @@ pub const VARIABLES: [&str; 18] = [
 pub enum ConsumptionType {
     /// Relevés informatifs : un relevé par jour.
     Informative,
-    /// Relevés publiés : des périodes à répartir sur leurs jours.
+    /// Relevés publiés : des périodes à répartir sur leurs jours. Pas encore
+    /// pris en charge (PLAN.md §11, étape 7) : refusé par la configuration.
     Published,
 }
 
@@ -169,9 +170,15 @@ impl Config {
 
         let consumption_type = match r.value("GAZPAR_CONSUMPTION_TYPE").as_deref().map(str::trim) {
             None | Some("informative") => Some(ConsumptionType::Informative),
-            Some("published") => Some(ConsumptionType::Published),
+            Some("published") => {
+                r.problem(
+                    "GAZPAR_CONSUMPTION_TYPE : « published » n'est pas encore pris en charge, \
+                     utiliser « informative » (valeur par défaut)",
+                );
+                None
+            }
             Some(_) => {
-                r.problem("GAZPAR_CONSUMPTION_TYPE : « informative » ou « published » attendu");
+                r.problem("GAZPAR_CONSUMPTION_TYPE : « informative » attendu");
                 None
             }
         };
@@ -583,7 +590,7 @@ mod tests {
                 ("GAZPAR_SCAN_INTERVAL", "60"),
                 ("GAZPAR_HISTORY_DAYS", "3650"),
                 ("GAZPAR_OVERLAP_DAYS", "60"),
-                ("GAZPAR_CONSUMPTION_TYPE", "published"),
+                ("GAZPAR_CONSUMPTION_TYPE", "informative"),
                 ("GAZPAR_TIMEZONE", "America/New_York"),
                 ("GAZPAR_STATISTIC_PREFIX", "sensor.gazpar2haws"),
                 ("LOG_LEVEL", "debug"),
@@ -595,7 +602,7 @@ mod tests {
         assert_eq!(c.scan_interval_minutes, 60);
         assert_eq!(c.history_days, 3650);
         assert_eq!(c.overlap_days, 60);
-        assert_eq!(c.consumption_type, ConsumptionType::Published);
+        assert_eq!(c.consumption_type, ConsumptionType::Informative);
         assert_eq!(c.timezone.iana_name(), Some("America/New_York"));
         assert_eq!(c.log_level, Level::Debug);
         assert_eq!(c.energy_statistic.as_str(), "sensor.gazpar2haws_energy");
@@ -761,6 +768,18 @@ mod tests {
             load(&vars).unwrap().consumption_type,
             ConsumptionType::Informative
         );
+    }
+
+    #[test]
+    fn published_is_not_supported_yet() {
+        let vars = with(minimal(), &[("GAZPAR_CONSUMPTION_TYPE", "published")]);
+        assert_eq!(
+            single_problem(&vars),
+            "GAZPAR_CONSUMPTION_TYPE : « published » n'est pas encore pris en charge, \
+             utiliser « informative » (valeur par défaut)"
+        );
+        let vars = with(minimal(), &[("GAZPAR_CONSUMPTION_TYPE", " published ")]);
+        assert!(single_problem(&vars).contains("pas encore pris en charge"));
     }
 
     #[test]
