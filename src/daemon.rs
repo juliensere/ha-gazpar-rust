@@ -3,9 +3,10 @@
 //! - un relevé tout de suite, puis un toutes les `interval` ;
 //! - **une erreur n'avance jamais le relevé suivant** : après chaque relevé,
 //!   réussi ou non, on attend l'intervalle complet ;
-//! - toute erreur est journalisée (`ATTENTION` pour une panne de réseau,
-//!   `ERREUR` sinon) et la boucle continue : seule une erreur de
-//!   configuration, détectée avant la boucle, fait sortir le programme ;
+//! - toute erreur est journalisée (`ATTENTION` pour une panne passagère,
+//!   [`Error::is_transient`], `ERREUR` sinon) et la boucle continue : seule
+//!   une erreur de configuration, détectée avant la boucle, fait sortir le
+//!   programme ;
 //! - si GRDF refuse les identifiants ([`Error::GrdfCredentialsRejected`]),
 //!   plus aucun relevé n'est tenté (donc plus aucune connexion à GRDF)
 //!   jusqu'au redémarrage du processus ; une erreur est journalisée à chaque
@@ -59,7 +60,11 @@ pub fn run(host: &mut dyn Host, interval: Duration, max_cycles: Option<u64>) {
                     rejected = Some(reason);
                 }
                 Err(e) => host.log(
-                    severity(&e),
+                    if e.is_transient() {
+                        Level::Warn
+                    } else {
+                        Level::Error
+                    },
                     &format!("{e} ; nouvel essai au prochain relevé, dans {minutes} min"),
                 ),
             },
@@ -75,17 +80,6 @@ fn still_rejected(reason: &str) -> String {
          à GRDF jusqu'au redémarrage de ha-gazpar. Corrigez GRDF_USERNAME ou GRDF_PASSWORD, \
          puis redémarrez le service"
     )
-}
-
-/// Niveau de journal d'une erreur de relevé : `ATTENTION` pour une panne de
-/// réseau (GRDF ou Home Assistant injoignable, délai dépassé), `ERREUR`
-/// pour un refus ou une réponse inattendue, qui demandent sans doute une
-/// action.
-pub fn severity(error: &Error) -> Level {
-    match error {
-        Error::Http(_) | Error::Io(_) => Level::Warn,
-        _ => Level::Error,
-    }
 }
 
 #[cfg(test)]
@@ -281,20 +275,5 @@ mod tests {
         ]);
         run(&mut host, INTERVAL, Some(3));
         assert_eq!(host.readings, 3);
-    }
-
-    #[test]
-    fn severity_by_kind() {
-        assert_eq!(severity(&Error::Http("x".into())), Level::Warn);
-        assert_eq!(severity(&Error::Io("x".into())), Level::Warn);
-        for e in [
-            Error::HomeAssistant("x".into()),
-            Error::Grdf("x".into()),
-            Error::GrdfLogin("x".into()),
-            Error::Protocol("x".into()),
-            rejected(),
-        ] {
-            assert_eq!(severity(&e), Level::Error, "{e:?}");
-        }
     }
 }

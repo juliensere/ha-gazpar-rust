@@ -4,7 +4,8 @@
 //! - `User-Agent` de navigateur, comme PyGazpar ;
 //! - corps de réponse borné à [`MAX_BODY_BYTES`], lu en UTF-8 (avec
 //!   remplacement des octets invalides) ;
-//! - statuts HTTP rendus tels quels, jamais transformés en erreur ;
+//! - statuts HTTP rendus tels quels, jamais transformés en erreur ; une
+//!   panne de transport devient [`Error::Http`] « GRDF injoignable (…) » ;
 //! - redirections **suivies à la main** (301, 302, 303, 307, 308 ; 303, et
 //!   301/302 sur un POST, deviennent un GET sans corps), au plus
 //!   [`MAX_REDIRECTS`] sauts, pour lire `Set-Cookie` à chaque saut et
@@ -434,8 +435,10 @@ impl Transport for UreqTransport {
     }
 }
 
-/// Erreur `ureq` en message français, sans adresse ni en-tête : certaines
-/// variantes d'`ureq` recopient l'adresse ou un en-tête reçu.
+/// Erreur `ureq` en message français qui nomme GRDF (« GRDF injoignable
+/// (délai dépassé) »), sans adresse ni en-tête : certaines variantes
+/// d'`ureq` recopient l'adresse ou un en-tête reçu. Ce client ne parle qu'à
+/// GRDF, le contexte est donc donné ici, à la source.
 fn transport_error(e: ureq::Error) -> Error {
     let message = match e {
         ureq::Error::Timeout(_) => "délai dépassé".to_owned(),
@@ -451,7 +454,7 @@ fn transport_error(e: ureq::Error) -> Error {
         ureq::Error::Rustls(e) => format!("TLS : {e}"),
         _ => "échec de la requête".to_owned(),
     };
-    Error::Http(message)
+    Error::Http(format!("GRDF injoignable ({message})"))
 }
 
 #[cfg(test)]
@@ -892,7 +895,7 @@ mod tests {
         let e = transport_error(ureq::Error::BadUri("https://h/?code=SECRET".into()));
         assert!(!e.to_string().contains("SECRET"));
         let e = transport_error(ureq::Error::HostNotFound);
-        assert_eq!(e, Error::Http("hôte introuvable".into()));
+        assert_eq!(e, Error::Http("GRDF injoignable (hôte introuvable)".into()));
         assert!(matches!(
             transport_error(ureq::Error::ConnectionFailed),
             Error::Http(_)
@@ -1009,7 +1012,11 @@ mod tests {
         let e = HttpClient::new(local(port))
             .get(&format!("http://127.0.0.1:{port}/?code=SECRET"), &[], &[])
             .unwrap_err();
-        assert!(matches!(e, Error::Http(_)), "{e:?}");
+        match &e {
+            Error::Http(m) => assert!(m.starts_with("GRDF injoignable ("), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(e.is_transient());
         assert!(!e.to_string().contains("SECRET"));
     }
 }

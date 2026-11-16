@@ -343,8 +343,18 @@ impl<S: Read + Write> WebSocket<S> {
     }
 }
 
-/// Ouvre une connexion WebSocket vers `ws://hôte[:port][/chemin]`.
+/// Ouvre une connexion WebSocket vers `ws://hôte[:port][/chemin]`. Le pair
+/// est Home Assistant : une erreur d'entrée-sortie (résolution, connexion
+/// TCP, délai, poignée de main coupée) le dit dès ici, « Home Assistant
+/// injoignable (…) ».
 pub fn connect(url: &str, timeouts: Timeouts) -> Result<WebSocket<TcpStream>, Error> {
+    open(url, timeouts).map_err(|e| match e {
+        Error::Io(m) => Error::Io(format!("Home Assistant injoignable ({m})")),
+        other => other,
+    })
+}
+
+fn open(url: &str, timeouts: Timeouts) -> Result<WebSocket<TcpStream>, Error> {
     let target = Target::new(Url::ws(url)?);
     let addrs = (target.socket_host(), target.port())
         .to_socket_addrs()
@@ -1139,7 +1149,9 @@ mod tests {
         match connect(&url, quick()) {
             Err(e) => assert_eq!(
                 e,
-                Error::Io("délai dépassé sur la connexion WebSocket".into())
+                Error::Io(
+                    "Home Assistant injoignable (délai dépassé sur la connexion WebSocket)".into()
+                )
             ),
             Ok(_) => panic!("connexion inattendue"),
         }
@@ -1152,7 +1164,13 @@ mod tests {
             .local_addr()
             .unwrap();
         match connect(&format!("ws://{addr}/"), quick()) {
-            Err(Error::Io(m)) => assert!(m.contains("impossible"), "{m}"),
+            Err(Error::Io(m)) => {
+                assert!(
+                    m.starts_with("Home Assistant injoignable (connexion à 127.0.0.1:"),
+                    "{m}"
+                );
+                assert!(m.contains("impossible"), "{m}");
+            }
             Err(e) => panic!("{e}"),
             Ok(_) => panic!("connexion inattendue"),
         }

@@ -17,13 +17,16 @@ pub enum Error {
     Config(Vec<String>),
     /// Ligne de commande invalide.
     Usage(String),
-    /// Entrée-sortie locale (fichier, socket).
+    /// Entrée-sortie (fichier, socket). Une connexion à Home Assistant
+    /// impossible le dit dès sa source (`ha::websocket::connect`) :
+    /// « Home Assistant injoignable (…) ».
     Io(String),
-    /// Transport HTTP vers GRDF (connexion, TLS, délai).
+    /// Transport HTTP vers GRDF (connexion, TLS, délai). Le message nomme
+    /// GRDF dès sa source (`grdf::http`) : « GRDF injoignable (…) ».
     Http(String),
     /// Échec de la connexion à Mon Espace GRDF qui ne prouve pas un refus
     /// des identifiants (page inattendue, étape d'Okta absente, session
-    /// expirée…) : passager, un nouvel essai au relevé suivant est permis.
+    /// expirée…) : un nouvel essai au relevé suivant est permis.
     GrdfLogin(String),
     /// GRDF refuse clairement les identifiants (mot de passe faux, compte
     /// inconnu). `run` cesse alors toute connexion à GRDF jusqu'à son
@@ -37,8 +40,6 @@ pub enum Error {
     Protocol(String),
     /// Valeur du domaine invalide (quantité, identifiant de statistique).
     Invalid(String),
-    /// Fonction prévue mais pas encore écrite.
-    NotImplemented(&'static str),
 }
 
 impl Error {
@@ -48,6 +49,41 @@ impl Error {
         match self {
             Error::Config(_) | Error::Usage(_) => 2,
             _ => 1,
+        }
+    }
+
+    /// Panne passagère : le même essai, sans rien changer, peut réussir plus
+    /// tard (GRDF ou Home Assistant injoignable, délai dépassé). Seule
+    /// classification des erreurs du programme :
+    ///
+    /// - le démon journalise une erreur passagère en `ATTENTION`, toute
+    ///   autre en `ERREUR` (elle demande sans doute une action) ;
+    /// - `grdf::api` ne reprend aussitôt (délais de 3, 6, 12 s) qu'un appel
+    ///   en erreur passagère.
+    ///
+    /// « Non passagère » ne veut pas dire « abandonnée » : le démon retente
+    /// toute erreur au relevé suivant, sauf
+    /// [`Error::GrdfCredentialsRejected`], seul cas définitif (plus aucune
+    /// connexion à GRDF jusqu'au redémarrage, pour ne pas faire bloquer le
+    /// compte). En particulier, un jeton Home Assistant refusé
+    /// ([`Error::HomeAssistant`]) est retenté à chaque intervalle : c'est
+    /// inoffensif (une connexion par intervalle, aucun compte tiers en jeu).
+    ///
+    /// Le `match` est exhaustif : une nouvelle variante doit être classée ici.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            // Réseau : GRDF ou Home Assistant injoignable, délai dépassé.
+            Error::Http(_) | Error::Io(_) => true,
+            // Définitif pour le démon : plus aucune connexion à GRDF.
+            Error::GrdfCredentialsRejected(_) => false,
+            // Jeton refusé, commande refusée, fuseau inconnu : action
+            // requise, mais retenté à chaque intervalle (inoffensif).
+            Error::HomeAssistant(_) => false,
+            // Réponse inattendue : passer en ERREUR, retenter au relevé
+            // suivant seulement.
+            Error::GrdfLogin(_) | Error::Grdf(_) | Error::Protocol(_) | Error::Invalid(_) => false,
+            // Détectées avant tout relevé : le programme sort (code 2).
+            Error::Config(_) | Error::Usage(_) => false,
         }
     }
 }
@@ -75,7 +111,6 @@ impl fmt::Display for Error {
             Error::HomeAssistant(m) => write!(f, "Home Assistant : {m}"),
             Error::Protocol(m) => write!(f, "protocole : {m}"),
             Error::Invalid(m) => write!(f, "valeur invalide : {m}"),
-            Error::NotImplemented(what) => write!(f, "pas encore implémenté : {what}"),
         }
     }
 }
@@ -114,10 +149,6 @@ mod tests {
              GRDF_PASSWORD (identifiants de Mon Espace GRDF)"
         );
         assert_eq!(
-            Error::NotImplemented("run").to_string(),
-            "pas encore implémenté : run"
-        );
-        assert_eq!(
             Error::HomeAssistant("x".into()).to_string(),
             "Home Assistant : x"
         );
@@ -129,7 +160,24 @@ mod tests {
         assert_eq!(Error::Usage("x".into()).exit_code(), 2);
         assert_eq!(Error::Http("x".into()).exit_code(), 1);
         assert_eq!(Error::GrdfCredentialsRejected("x".into()).exit_code(), 1);
-        assert_eq!(Error::NotImplemented("x").exit_code(), 1);
+    }
+
+    #[test]
+    fn only_network_failures_are_transient() {
+        assert!(Error::Http("GRDF injoignable (délai dépassé)".into()).is_transient());
+        assert!(Error::Io("Home Assistant injoignable (refusé)".into()).is_transient());
+        for e in [
+            Error::Config(vec![]),
+            Error::Usage("x".into()),
+            Error::GrdfLogin("x".into()),
+            Error::GrdfCredentialsRejected("x".into()),
+            Error::Grdf("x".into()),
+            Error::HomeAssistant("authentification refusée".into()),
+            Error::Protocol("x".into()),
+            Error::Invalid("x".into()),
+        ] {
+            assert!(!e.is_transient(), "{e:?}");
+        }
     }
 
     #[test]

@@ -300,9 +300,10 @@ pub fn decide(
         }
     };
     let response = match outcome {
-        Err(Error::Http(why)) => {
-            let reason = format!("GRDF injoignable ({path} : {why})");
-            return retry(backoff(attempt), reason.clone(), Error::Http(reason));
+        // Le message nomme déjà GRDF (`grdf::http`) : l'erreur finale est
+        // celle du transport, telle quelle.
+        Err(e) if e.is_transient() => {
+            return retry(backoff(attempt), format!("{e}, appel {path}"), e.clone());
         }
         Err(other) => return Decision::Fail(other.clone()),
         Ok(response) => response,
@@ -490,15 +491,21 @@ mod tests {
 
     #[test]
     fn network_errors_are_retried_then_raised() {
-        let outcome = Err(Error::Http("délai dépassé".into()));
-        assert!(matches!(
+        let error = Error::Http("GRDF injoignable (délai dépassé)".into());
+        let outcome = Err(error.clone());
+        assert_eq!(
             decide(&outcome, "/p", PREFIX, 1, false),
-            Decision::Retry { delay, .. } if delay == Duration::from_secs(3)
-        ));
-        assert!(matches!(
+            Decision::Retry {
+                delay: Duration::from_secs(3),
+                reason: "HTTP : GRDF injoignable (délai dépassé), appel /p".into()
+            }
+        );
+        // L'erreur finale est celle du transport, sans contexte ajouté deux
+        // fois.
+        assert_eq!(
             decide(&outcome, "/p", PREFIX, MAX_ATTEMPTS, false),
-            Decision::Fail(Error::Http(m)) if m.contains("délai dépassé")
-        ));
+            Decision::Fail(error)
+        );
     }
 
     #[test]

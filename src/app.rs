@@ -80,12 +80,7 @@ pub struct Network;
 impl Connector for Network {
     fn home_assistant(&mut self, config: &Config) -> Result<Box<dyn HomeAssistant>, Error> {
         let store =
-            HomeAssistantStore::connect(&config.ha_url, &config.ha_token, Timeouts::default())
-                .map_err(|e| match e {
-                    // Seule l'ouverture de la connexion produit ces erreurs ici.
-                    Error::Io(m) => Error::Io(format!("Home Assistant injoignable ({m})")),
-                    other => other,
-                })?;
+            HomeAssistantStore::connect(&config.ha_url, &config.ha_token, Timeouts::default())?;
         Ok(Box::new(store))
     }
 
@@ -100,24 +95,7 @@ impl Connector for Network {
             pce: config.pce.clone(),
         };
         let client = GrdfClient::new(settings, Box::new(std::thread::sleep))?;
-        Ok(Box::new(Grdf(client)))
-    }
-}
-
-/// Client GRDF dont les erreurs de transport nomment GRDF.
-struct Grdf(GrdfClient);
-
-impl ConsumptionSource for Grdf {
-    fn daily_readings(
-        &mut self,
-        from: Date,
-        to: Date,
-    ) -> Result<Vec<crate::domain::DailyReading>, Error> {
-        self.0.daily_readings(from, to).map_err(|e| match e {
-            // `ureq` n'est utilisé que vers GRDF.
-            Error::Http(m) => Error::Http(format!("GRDF injoignable ({m})")),
-            other => other,
-        })
+        Ok(Box::new(client))
     }
 }
 
