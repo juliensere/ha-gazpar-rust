@@ -794,9 +794,9 @@ mod tests {
         assert!(allowed.allows("grdf.fr") && allowed.allows("a.grdf.fr"));
         assert!(!allowed.allows("fr") && !allowed.allows("evil.fr"));
         // Une seule étiquette : exactement.
-        let allowed = AllowedHosts::from_urls(&["http://rasp:8080"]).unwrap();
-        assert!(allowed.allows("rasp"));
-        assert!(!allowed.allows("a.rasp"));
+        let allowed = AllowedHosts::from_urls(&["http://nas:8080"]).unwrap();
+        assert!(allowed.allows("nas"));
+        assert!(!allowed.allows("a.nas"));
         assert!(AllowedHosts::from_urls(&["pas une adresse"]).is_err());
     }
 

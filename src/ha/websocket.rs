@@ -1020,9 +1020,9 @@ mod tests {
     #[test]
     fn target_is_a_view_of_the_address() {
         let t = |url: &str| Target::new(Url::ws(url).unwrap());
-        let ha = t("ws://192.168.0.88:8123/api/websocket");
-        assert_eq!((ha.socket_host(), ha.port()), ("192.168.0.88", 8123));
-        assert_eq!(ha.0.authority(), "192.168.0.88:8123");
+        let ha = t("ws://192.168.1.10:8123/api/websocket");
+        assert_eq!((ha.socket_host(), ha.port()), ("192.168.1.10", 8123));
+        assert_eq!(ha.0.authority(), "192.168.1.10:8123");
         assert_eq!(ha.0.path_and_query(), "/api/websocket");
         let plain = t("ws://ha.local");
         assert_eq!((plain.socket_host(), plain.port()), ("ha.local", 80));
