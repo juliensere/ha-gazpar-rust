@@ -29,7 +29,7 @@ export MAX_CRATES CRATES_TARGET HA_IMAGE HA_PORT HA_TEST_DIR
 
 .DEFAULT_GOAL := help
 .PHONY: help check fmt fmt-check lint test deny crates deps deps-check version-check \
-	cover build release ha-up ha-down test-ha dev image image-all dist
+	cover build release ha-up ha-down test-ha dev image image-all dist release-check
 
 help: ## Liste les cibles
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -143,3 +143,8 @@ dist: ## Binaires statiques amd64 et arm64 dans dist/, avec SHA256SUMS
 	@rm -r dist/oci
 	@cd dist && sha256sum ha-gazpar-* > SHA256SUMS && cat SHA256SUMS
 	@for f in dist/ha-gazpar-*; do echo "$$f : $$(stat -c %s $$f) octets"; done
+
+# Hors de `make check` : échoue tant que CHANGELOG.md n'a pas de section
+# datée pour la version de Cargo.toml.
+release-check: ## Concordance tag, Cargo.toml, HA_VERSION et CHANGELOG.md (TAG=vAAAA.M.N)
+	@scripts/release-check.sh check $(if $(TAG),$(TAG),v$(VERSION))
