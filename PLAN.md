@@ -6,12 +6,12 @@ Réécriture en Rust de [gazpar2haws](https://github.com/ssenart/gazpar2haws) 0.
 
 Home Assistant ne charge que des intégrations Python : un « module » Rust ne peut pas vivre dans HA. Le livrable est donc, comme gazpar2haws et ha-linky, **un petit démon externe** qui parle à HA par son API WebSocket.
 
-| | gazpar2haws 0.6.1 (mesuré) | ha-gazpar-rust (cible, à mesurer) |
+| | gazpar2haws 0.6.1 (mesuré) | ha-gazpar-rust (mesuré le 2026-11-16) |
 |---|---|---|
-| Image Docker | 241 Mo | < 5 Mo (`FROM scratch`) |
-| Code | ≈ 6 100 lignes Python | ≈ 1 800 lignes Rust |
+| Image Docker | 241 Mo | 1,2 Mo compressée en amd64 (`FROM scratch`, binaire statique de 2,3 Mo) |
+| Code | ≈ 6 100 lignes Python (tout compris) | ≈ 5 200 lignes Rust hors tests, commentaires et lignes vides (l'estimation initiale de 1 800 était fausse : le code maison qui remplace des dépendances — WebSocket, cookies, URL, SHA-1 — et la configuration à trois sources pèsent), plus ≈ 3 100 lignes de tests d'intégration |
 | Dépendances | 21 paquets Python + image Debian | 3 directes, ≈ 30 crates au total, aucun système de base |
-| Mémoire au repos | interpréteur Python + numpy + pydantic | quelques Mo |
+| Mémoire | interpréteur Python + numpy + pydantic | ≈ 4 Mo de mémoire résidente maximale pendant `check` et `once` (mesuré contre les faux serveurs, donc sans TLS) |
 | Exécution | boucle asyncio + appels HTTP bloquants | synchrone, un seul thread |
 
 Hors périmètre : source Excel, fréquences hebdo/mensuelle/annuelle, CLI PyGazpar, températures (météo), migration des anciens capteurs, moteur de tarification générique.
@@ -115,7 +115,7 @@ Points de maintenance connus qui ne sont pas de la sécurité :
 
 Quantités en entiers : les valeurs GRDF sont lues comme texte décimal et converties en millièmes (`i64`), ce qui évite les erreurs de flottants dans les cumuls.
 
-**Profil de compilation** : `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true`. Cible `aarch64-unknown-linux-musl` (statique) pour rasp, `x86_64-unknown-linux-musl` pour le développement.
+**Profil de compilation** : `opt-level = "z"`, `lto = true`, `codegen-units = 1`, `panic = "abort"`, `strip = true`. Cible `aarch64-unknown-linux-musl` (statique) pour Raspberry Pi, `x86_64-unknown-linux-musl` pour le développement.
 
 **Identifiants des statistiques.** Statistiques externes `gazpar:<pce>_energy` et `gazpar:<pce>_volume` (source `gazpar`), sur le modèle de ha-linky (`linky:<PRM>`) déjà présent dans le tableau de bord Énergie. Elles apparaissent dans la liste déroulante, sans faux capteur `sensor.…` ni avertissement « entité non définie ». Préfixe réglable (`GAZPAR_STATISTIC_PREFIX`) pour reprendre des statistiques `sensor.gazpar2haws_*` existantes.
 
@@ -230,7 +230,7 @@ Au-dessus des tests unitaires, deux niveaux plus légers :
 - **Tests de bout en bout hors ligne** : `once` contre les faux serveurs GRDF et HA, dans `cargo test`.
 - **Essai contre un vrai Home Assistant** (`make test-ha`, et en CI) : seul moyen de vérifier que HA accepte réellement le schéma d'import.
 
-Seuil de couverture en CI : 90 % des lignes hors `main.rs`. Aucun test automatique ne contacte le vrai GRDF.
+Seuil de couverture en CI : 90 % des lignes hors `main.rs` (job `cover` ; mesuré à 98,3 % le 2026-11-16 par `cargo llvm-cov`, modules de test intégrés aux fichiers compris). Aucun test automatique ne contacte le vrai GRDF.
 
 ## 9. CI/CD
 
@@ -238,7 +238,7 @@ Deux workflows GitHub Actions.
 
 **`ci.yml`** — à chaque push et pull request, plus une exécution planifiée hebdomadaire :
 
-1. `make check` (format, lint, tests, couverture, `cargo deny`, plafond de crates) ;
+1. `make check` (format, lint, tests, `cargo deny`, plafond de crates), puis `make cover` (seuil de couverture) dans un job séparé ;
 2. compilation statique arm64 et amd64, taille du binaire affichée et comparée à un plafond ;
 3. essai contre le conteneur Home Assistant de la version de référence (voir §10) ;
 4. exécution planifiée seulement : avis de sécurité, et essai contre `home-assistant:stable`. Un échec ouvre un ticket : c'est l'alerte « une nouvelle version de HA casse l'import » ou « une faille touche une dépendance ».
@@ -293,7 +293,7 @@ Chaque étape se termine par un critère vérifiable.
 
 5. **Synchronisation.** `sync.rs` : premier import, relevés suivants, fenêtre de recouvrement, erreurs non fatales, délai minimal entre logins. *Critère : `once` lancé deux fois de suite n'ajoute aucun point et ne change aucune somme ; un jour vide rempli plus tard dans le jeu d'essai est bien rattrapé.*
 
-6. **Image et déploiement.** `Dockerfile` multi-étapes vers `FROM scratch`, compilation croisée arm64 (`cargo-zigbuild` ou `cross`), `release.yml` et première publication `2026.9.0` (§9, §10). Pas de contrôle de santé : sans état partagé (système de fichiers en lecture seule), une commande lancée à part ne peut rien savoir du démon. Remplacement du service `gazpar2haws` dans `~/homeassistant/compose.yml` (mêmes durcissements : `read_only`, `cap_drop: ALL`, utilisateur non root). *Critère : taille de l'image et mémoire résidente mesurées et notées dans le README ; historique de 3 ans visible dans le tableau de bord Énergie.*
+6. **Image et déploiement.** `Dockerfile` multi-étapes vers `FROM scratch`, compilation croisée arm64 (`cargo-zigbuild` ou `cross`), `release.yml` et première publication `2026.9.0` (§9, §10). Pas de contrôle de santé : sans état partagé (système de fichiers en lecture seule), une commande lancée à part ne peut rien savoir du démon. Déploiement à côté de Home Assistant selon le manuel (durcissements : `read_only`, `cap_drop: ALL`, utilisateur non root). *Critère : taille de l'image et mémoire résidente mesurées et notées dans le README ; historique de 3 ans visible dans le tableau de bord Énergie.*
 
 7. **Options, selon besoin.**
    - Type `published` : répartition d'une période sur ses jours (volume réparti également, énergie au prorata, arrondis qui retombent exactement sur les totaux) et reconstruction des trous à partir des index.
