@@ -105,8 +105,8 @@ test-ha: ha-up ## Essais réels contre le Home Assistant jetable
 	HA_TEST_TAG=$(HA_TAG) \
 	$(CARGO) test --locked --test ha_real -- --ignored --test-threads=1
 
-dev: ## Chaîne complète contre faux GRDF et HA jetable (itération ultérieure)
-	@echo "make $@ : itération ultérieure (étapes 2 à 5)"
+dev: ## check puis once deux fois, contre les faux GRDF et HA (127.0.0.1)
+	$(CARGO) test --locked --test commands -- --ignored --exact demo --nocapture
 
 # Image Docker (Dockerfile). Rien n'est poussé : la publication est faite par
 # .github/workflows/release.yml. PLATFORMS vaut l'architecture du démon Docker ;

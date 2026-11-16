@@ -10,7 +10,10 @@
 //!   `ports` ne dépend que de `domain` et `error`.
 //! - `sync` et `readings` ne font aucune entrée-sortie : ni réseau, ni
 //!   horloge, ni environnement.
-//! - `grdf` et `ha` ne se connaissent pas ; seul `cli` les assemble.
+//! - `grdf` et `ha` ne se connaissent pas ; seul `app` (racine de
+//!   composition) les assemble et construit les vrais clients. `cli` analyse
+//!   la ligne de commande, aiguille et met en forme ; `daemon` cadence les
+//!   relevés de `run`.
 //! - Seul `grdf/http.rs` importe `ureq`.
 
 #![forbid(unsafe_code)]
@@ -19,9 +22,11 @@
 #[macro_use]
 pub mod log;
 
+pub mod app;
 pub mod cli;
 pub mod config;
 pub mod config_file;
+pub mod daemon;
 pub mod domain;
 pub mod error;
 pub mod grdf;

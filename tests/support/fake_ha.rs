@@ -57,6 +57,8 @@ pub struct State {
     pub time_zone: String,
     /// Nombre d'authentifications refusées.
     pub rejected_auths: usize,
+    /// Connexions TCP reçues (poignée de main comprise ou non).
+    pub connections: usize,
 }
 
 impl State {
@@ -97,6 +99,7 @@ impl FakeHa {
                         break;
                     }
                     if let Ok(stream) = stream {
+                        state.lock().expect("état").connections += 1;
                         // Une connexion en erreur n'arrête pas le serveur.
                         let _ = serve(stream, &token, &state);
                     }

@@ -108,8 +108,9 @@ fn wrong_password_is_a_clear_error_after_a_single_attempt() {
     let (mut grdf, sleeps) = client_for(&fake, PCE, "mauvais-mot-de-passe");
     let e = grdf.daily_readings(FROM, TO).unwrap_err();
 
-    assert!(matches!(e, Error::GrdfLogin(_)), "{e:?}");
+    assert!(matches!(e, Error::GrdfCredentialsRejected(_)), "{e:?}");
     let shown = e.to_string();
+    assert!(shown.starts_with("connexion à GRDF refusée : "), "{shown}");
     assert!(shown.contains("mot de passe refusé"), "{shown}");
     assert!(shown.contains("Authentication failed"), "{shown}");
     assert!(shown.contains("401"), "{shown}");
@@ -122,6 +123,32 @@ fn wrong_password_is_a_clear_error_after_a_single_attempt() {
     assert_eq!((c.identify, c.challenge, c.logins), (1, 1, 0));
     assert_eq!((c.pce_list, c.consumption.len()), (0, 0));
     assert!(sleeps.borrow().is_empty(), "pas de nouvel essai");
+}
+
+#[test]
+fn unavailable_login_service_is_not_a_credentials_rejection() {
+    let fake = FakeGrdf::start();
+    fake.set_faults(Faults {
+        login_unavailable: 1,
+        ..Faults::default()
+    });
+    let (mut grdf, sleeps) = client(&fake);
+    let e = grdf.daily_readings(FROM, TO).unwrap_err();
+    assert!(
+        matches!(&e, Error::GrdfLogin(m) if m.contains("statut HTTP 503")),
+        "{e:?}"
+    );
+    assert!(
+        e.to_string().starts_with("échec de la connexion à GRDF"),
+        "{e}"
+    );
+    let c = fake.counters();
+    assert_eq!((c.identify, c.challenge, c.logins), (1, 1, 0));
+    assert!(sleeps.borrow().is_empty(), "pas de nouvel essai");
+
+    // Le relevé suivant se connecte normalement.
+    assert_eq!(grdf.daily_readings(FROM, TO).unwrap().len(), 28);
+    assert_eq!(fake.counters().logins, 1);
 }
 
 #[test]
@@ -405,7 +432,8 @@ fn secrets_never_reach_logs_or_errors() {
         "ERREUR session",
         "ERREUR pce",
         "ERREUR hôte : protocole : redirection vers l'hôte localhost refusée",
-        "ERREUR hôte : connexion à GRDF refusée : fin de connexion : success.href",
+        "ERREUR hôte : échec de la connexion à GRDF : fin de connexion : success.href",
+        "ERREUR mot de passe : connexion à GRDF refusée : mot de passe refusé",
     ] {
         assert!(text.contains(expected), "« {expected} » absent :\n{text}");
     }

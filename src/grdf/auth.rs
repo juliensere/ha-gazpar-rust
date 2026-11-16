@@ -23,6 +23,30 @@
 //! erreur : les motifs d'Okta sont expurgés avant usage. La connexion n'est
 //! jamais retentée ici : un mauvais mot de passe = une seule tentative.
 //!
+//! **Refus des identifiants ou échec passager.** Un refus clair des
+//! identifiants devient [`Error::GrdfCredentialsRejected`] (le démon cesse
+//! alors de se connecter), tout autre échec [`Error::GrdfLogin`] (nouvel
+//! essai au relevé suivant). Règle, dans [`credentials_rejected`] :
+//!
+//! - seulement en réponse à `identify` ou `challenge/answer`, avec un statut
+//!   4xx autre que 429 ;
+//! - jamais si Okta parle d'une session expirée (`idx.session.expired`,
+//!   `errorSummary` « The session has expired. ») ;
+//! - refus si le message d'Okta porte une clé de refus d'identifiants
+//!   ([`REJECTION_KEYS`] : mot de passe faux, compte inconnu) ;
+//! - refus aussi pour un 401 à `challenge/answer` sans clé connue : c'est
+//!   l'étape qui vérifie le mot de passe, quelques millisecondes après
+//!   `identify` (un `stateHandle` expiré entre les deux est invraisemblable),
+//!   et la clé exacte d'Okta peut changer sans prévenir.
+//!
+//! Tout le reste est passager : statut 5xx ou 429, 400 ou 403 sans clé
+//! connue, page d'accueil sans `stateToken`, étape `challenge-authenticator`
+//! absente, `success.href` manquant ou hors de `grdf.fr`. Dans le doute, une
+//! tentative par relevé (toutes les 8 h par défaut) vaut mieux qu'un démon
+//! qui cesse de relever sans raison. Un compte inconnu est en pratique
+//! refusé à `challenge/answer` : Okta répond normalement à `identify` pour
+//! ne pas révéler quels comptes existent (comme le faux serveur des tests).
+//!
 //! L'analyse des réponses est faite par des fonctions pures.
 //!
 //! Dépendances : `grdf::http`, `grdf::url`, `secret`, `error`, `log`,
@@ -38,6 +62,31 @@ use crate::secret::Secret;
 pub const IDENTIFY_PATH: &str = "/idp/idx/identify";
 pub const CHALLENGE_PATH: &str = "/idp/idx/challenge/answer";
 const OKTA_ACCEPT: &str = "application/json; okta-version=1.0.0";
+
+/// Clés `i18n` d'Okta qui signifient un refus des identifiants : mot de
+/// passe faux (`incorrectPassword` ; `errors.E0000004`, « Authentication
+/// failed ») ou compte inconnu (`idx.unknown.user`).
+pub const REJECTION_KEYS: [&str; 3] = ["incorrectPassword", "errors.E0000004", "idx.unknown.user"];
+/// Clés `i18n` d'Okta d'une session de connexion expirée : passager.
+pub const EXPIRED_KEYS: [&str; 1] = ["idx.session.expired"];
+
+/// Étape du parcours Okta qui a répondu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// `POST /idp/idx/identify` (e-mail).
+    Identify,
+    /// `POST /idp/idx/challenge/answer` (mot de passe).
+    Challenge,
+}
+
+impl Step {
+    fn label(self) -> &'static str {
+        match self {
+            Step::Identify => "identification refusée",
+            Step::Challenge => "mot de passe refusé",
+        }
+    }
+}
 /// Longueur maximale d'un motif d'Okta repris dans une erreur.
 const MAX_REASON_CHARS: usize = 200;
 
@@ -97,7 +146,7 @@ pub fn login(
     let secrets = [username, password, state_token.as_str()];
     if identify.status != 200 {
         return Err(refused(
-            "identification",
+            Step::Identify,
             identify.status,
             &identify.body,
             &secrets,
@@ -131,7 +180,7 @@ pub fn login(
     )?;
     if answer.status != 200 {
         return Err(refused(
-            "mot de passe",
+            Step::Challenge,
             answer.status,
             &answer.body,
             &secrets,
@@ -162,11 +211,53 @@ pub fn login(
     Ok(())
 }
 
-fn refused(step: &str, status: u16, body: &str, secrets: &[&str]) -> Error {
-    Error::GrdfLogin(format!(
-        "{step} refusé par GRDF (statut HTTP {status}) : {}",
+/// Erreur d'un refus d'Okta : [`Error::GrdfCredentialsRejected`] si
+/// [`credentials_rejected`], sinon [`Error::GrdfLogin`].
+fn refused(step: Step, status: u16, body: &str, secrets: &[&str]) -> Error {
+    let message = format!(
+        "{} par GRDF (statut HTTP {status}) : {}",
+        step.label(),
         scrub(&login_error_reason(body), secrets)
-    ))
+    );
+    if credentials_rejected(step, status, body) {
+        Error::GrdfCredentialsRejected(message)
+    } else {
+        Error::GrdfLogin(message)
+    }
+}
+
+/// La réponse d'Okta à `step` (statut et corps) refuse-t-elle clairement
+/// les identifiants ? Règle détaillée en tête du module ; dans le doute,
+/// `false` (échec passager).
+pub fn credentials_rejected(step: Step, status: u16, body: &str) -> bool {
+    if !(400..500).contains(&status) || status == 429 {
+        return false;
+    }
+    let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let keys = message_keys(&parsed);
+    let expired = keys.iter().any(|k| EXPIRED_KEYS.contains(k))
+        || parsed
+            .get("errorSummary")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.to_ascii_lowercase().contains("expired"));
+    if expired {
+        return false;
+    }
+    keys.iter().any(|k| REJECTION_KEYS.contains(k)) || (step == Step::Challenge && status == 401)
+}
+
+/// Clés `messages.value[].i18n.key` d'une réponse d'Okta.
+fn message_keys(body: &Value) -> Vec<&str> {
+    body.get("messages")
+        .and_then(|m| m.get("value"))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| v.get("i18n")?.get("key")?.as_str())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `"stateToken" : "…"` dans la page de connexion, avec `\x2D` → `-`.
@@ -576,7 +667,7 @@ mod tests {
         })
         .to_string();
         let e = refused(
-            "mot de passe",
+            Step::Challenge,
             401,
             &body,
             &["jean@example.org", "pw", "02.id.HANDLE"],
@@ -588,6 +679,114 @@ mod tests {
         );
         assert!(shown.contains("statut HTTP 401"), "{shown}");
         assert!(shown.contains("Compte *** bloqué"), "{shown}");
+    }
+
+    // --- Refus des identifiants ou échec passager ---
+
+    fn okta_message(key: &str, message: &str) -> String {
+        json!({
+            "version": "1.0.0",
+            "stateHandle": "02.id.HANDLE",
+            "messages": {"type": "array", "value": [
+                {"message": message, "i18n": {"key": key}, "class": "ERROR"}
+            ]}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn wrong_password_is_a_rejection() {
+        for key in ["errors.E0000004", "incorrectPassword"] {
+            let body = okta_message(key, "Authentication failed");
+            assert!(credentials_rejected(Step::Challenge, 401, &body), "{key}");
+            assert!(credentials_rejected(Step::Challenge, 400, &body), "{key}");
+        }
+        // 401 au mot de passe, sans motif reconnu : refus.
+        assert!(credentials_rejected(Step::Challenge, 401, "{}"));
+        assert!(credentials_rejected(Step::Challenge, 401, "<html>"));
+    }
+
+    #[test]
+    fn unknown_account_is_a_rejection() {
+        let body = okta_message("idx.unknown.user", "There is no account with the Username.");
+        assert!(credentials_rejected(Step::Identify, 400, &body));
+        assert!(credentials_rejected(Step::Challenge, 401, &body));
+    }
+
+    #[test]
+    fn expired_session_is_transient() {
+        // Réponse du faux serveur à un stateHandle faux.
+        let summary =
+            json!({"version": "1.0.0", "errorSummary": "The session has expired."}).to_string();
+        for (step, status) in [
+            (Step::Challenge, 400),
+            (Step::Challenge, 401),
+            (Step::Identify, 401),
+        ] {
+            assert!(
+                !credentials_rejected(step, status, &summary),
+                "{step:?} {status}"
+            );
+            let keyed = okta_message("idx.session.expired", "The session has expired.");
+            assert!(
+                !credentials_rejected(step, status, &keyed),
+                "{step:?} {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_failures_are_transient() {
+        let wrong = okta_message("errors.E0000004", "Authentication failed");
+        // Débit limité ou panne de GRDF, même avec un motif de refus.
+        for status in [429, 500, 502, 503, 200, 302] {
+            assert!(
+                !credentials_rejected(Step::Challenge, status, &wrong),
+                "{status}"
+            );
+        }
+        // Refus sans motif reconnu ailleurs qu'au mot de passe en 401.
+        for (step, status) in [
+            (Step::Identify, 400),
+            (Step::Identify, 401),
+            (Step::Identify, 403),
+            (Step::Challenge, 400),
+            (Step::Challenge, 403),
+        ] {
+            let body = okta_message("errors.E0000001", "Api validation failed");
+            assert!(
+                !credentials_rejected(step, status, &body),
+                "{step:?} {status}"
+            );
+            assert!(
+                !credentials_rejected(step, status, "{}"),
+                "{step:?} {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejection_gives_the_dedicated_error_without_secret() {
+        let body = okta_message("errors.E0000004", "Authentication failed jean@example.org");
+        let e = refused(
+            Step::Challenge,
+            401,
+            &body,
+            &["jean@example.org", "pw", "02.id.HANDLE"],
+        );
+        assert_eq!(
+            e,
+            Error::GrdfCredentialsRejected(
+                "mot de passe refusé par GRDF (statut HTTP 401) : Authentication failed ***".into()
+            )
+        );
+        let e = refused(Step::Identify, 503, "{}", &[]);
+        assert_eq!(
+            e,
+            Error::GrdfLogin(
+                "identification refusée par GRDF (statut HTTP 503) : aucun motif donné".into()
+            )
+        );
     }
 
     #[test]

@@ -17,12 +17,16 @@
 //!
 //! Puis l'API : `GET /api/e-conso/pce` et
 //! `GET /api/e-conso/pce/consommation/informatives` (jeu d'essai de PyGazpar
-//! filtré sur `dateDebut..=dateFin`, `[]` si rien).
+//! filtré sur `dateDebut..=dateFin`, `[]` si rien). Les relevés servis
+//! peuvent être remplacés ([`FakeGrdf::set_records`]) ou complétés
+//! ([`FakeGrdf::publish`], pour un jour publié ou corrigé en retard) :
+//! les essais du binaire, qui suit la vraie date du jour, s'en servent.
 //!
 //! Pannes pilotables ([`Faults`]) : 429, session expirée (401 ou redirection
 //! vers la page de connexion), page HTML d'erreur, connexion coupée,
 //! redirection ou `success.href` vers un autre hôte (`localhost` au lieu de
-//! `127.0.0.1`, donc toujours local si le client le suivait à tort).
+//! `127.0.0.1`, donc toujours local si le client le suivait à tort),
+//! service de connexion indisponible (503 à `challenge/answer`).
 //! Compteurs et anomalies constatées côté serveur : [`Counters`].
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
@@ -84,6 +88,9 @@ pub struct Faults {
     pub foreign_redirect: bool,
     /// `success.href` désigne l'hôte `localhost`.
     pub foreign_success_href: bool,
+    /// Nombre de réponses 503 (page HTML) à `challenge/answer` : panne
+    /// passagère du service de connexion, pas un refus d'identifiants.
+    pub login_unavailable: u32,
 }
 
 /// Ce que le serveur a vu.
@@ -184,6 +191,19 @@ impl FakeGrdf {
     /// Adresse de « connexion ».
     pub fn login_url(&self) -> &str {
         &self.login
+    }
+
+    /// Remplace les relevés servis (voir [`record`]).
+    pub fn set_records(&self, records: Vec<Value>) {
+        self.state.lock().unwrap().records = records;
+    }
+
+    /// Publie un relevé : remplace celui du même jour gazier, ou l'ajoute.
+    pub fn publish(&self, record: Value) {
+        let mut state = self.state.lock().unwrap();
+        let day = record["journeeGaziere"].clone();
+        state.records.retain(|r| r["journeeGaziere"] != day);
+        state.records.push(record);
     }
 
     pub fn set_faults(&self, faults: Faults) {
@@ -382,6 +402,7 @@ impl Reply {
             401 => "Unauthorized",
             404 => "Not Found",
             429 => "Too Many Requests",
+            503 => "Service Unavailable",
             _ => "Error",
         };
         let mut out = format!("HTTP/1.1 {} {reason}\r\n", self.status);
@@ -606,6 +627,10 @@ fn identify(state: &mut State, request: &Request) -> Reply {
 fn challenge(state: &mut State, request: &Request) -> Reply {
     state.counters.challenge += 1;
     okta_checks(state, request, "challenge");
+    if state.faults.login_unavailable > 0 {
+        state.faults.login_unavailable -= 1;
+        return Reply::html(503, "<html>Service indisponible</html>");
+    }
     let body = request.json();
     if body["stateHandle"] != STATE_HANDLE {
         state
@@ -645,6 +670,29 @@ fn challenge(state: &mut State, request: &Request) -> Reply {
             }
         }),
     )
+}
+
+/// Relevé informatif d'un jour gazier (`AAAA-MM-JJ`), au format de GRDF ;
+/// `None` = valeur pas encore publiée (`null`).
+pub fn record(day: &str, energy_kwh: Option<f64>, volume_m3: Option<f64>) -> Value {
+    json!({
+        "coeffConversion": 11.17,
+        "dateDebutReleve": format!("{day}T06:00:00+00:00"),
+        "dateFinReleve": null,
+        "energieConsomme": energy_kwh,
+        "frequenceReleve": null,
+        "indexDebut": null,
+        "indexFin": null,
+        "journeeGaziere": day,
+        "natureReleve": "Informative Journalier",
+        "pcs": null,
+        "pta": null,
+        "qualificationReleve": if energy_kwh.is_some() { "Mesuré" } else { "Absence de Données" },
+        "status": null,
+        "temperature": null,
+        "volumeBrutConsomme": volume_m3,
+        "volumeConverti": null
+    })
 }
 
 /// `http://127.0.0.1:port` devenu `http://localhost:port` si `foreign`.

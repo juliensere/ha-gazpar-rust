@@ -27,8 +27,8 @@
 //! Aucune entrée-sortie : ni réseau, ni horloge, ni environnement, ni
 //! journal. La date du jour est reçue en paramètre ; GRDF et HA sont
 //! atteints uniquement par les traits de `ports`, ce qui permet de tester
-//! avec des implémentations en mémoire. C'est `cli` qui journalise le
-//! [`Report`].
+//! avec des implémentations en mémoire. C'est `app` qui appelle
+//! [`run_once`] et `cli` qui journalise le [`Report`].
 //!
 //! Dépendances : `domain`, `ports`, `error` (et `jiff` pour les dates).
 
@@ -228,12 +228,7 @@ pub fn run_once(
     today: Date,
     mode: Mode,
 ) -> Result<Report, Error> {
-    let depth = settings.history_days.max(settings.overlap_days);
-    let read_start = days_before(today, depth.saturating_add(1))?;
-    let mut existing = Vec::with_capacity(Measure::ALL.len());
-    for measure in Measure::ALL {
-        existing.push(store.daily_points(ids.get(measure), read_start, today)?);
-    }
+    let existing = read_existing(store, ids, settings, today)?;
 
     let history_start = days_before(today, settings.history_days)?;
     let overlap_start = days_before(today, settings.overlap_days)?;
@@ -281,6 +276,40 @@ pub fn run_once(
         readings,
         measures,
     })
+}
+
+/// Dernier jour présent dans Home Assistant pour chaque mesure, dans
+/// l'ordre de [`Measure::ALL`], sur la période que lit [`run_once`] (au-delà,
+/// `None`). Pour `check`, avant tout appel à GRDF.
+pub fn last_known_days(
+    store: &mut dyn StatisticsStore,
+    ids: &StatisticIds,
+    settings: SyncSettings,
+    today: Date,
+) -> Result<Vec<(Measure, Option<Date>)>, Error> {
+    let existing = read_existing(store, ids, settings, today)?;
+    Ok(Measure::ALL
+        .into_iter()
+        .zip(existing.iter().map(|points| last_day(points)))
+        .collect())
+}
+
+/// Points de HA des deux mesures sur
+/// `[today - max(history_days, overlap_days) - 1, today]` (étape 1 de
+/// [`run_once`]), dans l'ordre de [`Measure::ALL`].
+fn read_existing(
+    store: &mut dyn StatisticsStore,
+    ids: &StatisticIds,
+    settings: SyncSettings,
+    today: Date,
+) -> Result<Vec<Vec<StatPoint>>, Error> {
+    let depth = settings.history_days.max(settings.overlap_days);
+    let read_start = days_before(today, depth.saturating_add(1))?;
+    let mut existing = Vec::with_capacity(Measure::ALL.len());
+    for measure in Measure::ALL {
+        existing.push(store.daily_points(ids.get(measure), read_start, today)?);
+    }
+    Ok(existing)
 }
 
 fn last_day(points: &[StatPoint]) -> Option<Date> {
@@ -964,6 +993,27 @@ mod tests {
         assert_eq!(simulated.readings, applied.readings);
         assert_eq!(simulated.requested, applied.requested);
         assert_eq!(simulated.imported(), 4);
+    }
+
+    #[test]
+    fn last_known_days_reads_the_same_period_as_a_reading() {
+        let ids = ids();
+        let mut store = MemoryStore::with(&ids, &[counter(1, 5), counter(13, 9)], &[]);
+        let known = last_known_days(&mut store, &ids, SETTINGS, day(16)).unwrap();
+        assert_eq!(
+            known,
+            vec![(Measure::Energy, Some(day(13))), (Measure::Volume, None)]
+        );
+        // Même période que run_once : history_days + 1 jours avant aujourd'hui.
+        let start = date(2026, 10, 16);
+        assert_eq!(
+            store.reads,
+            vec![
+                (ids.energy.clone(), start, day(16)),
+                (ids.volume.clone(), start, day(16)),
+            ]
+        );
+        assert!(store.imports.is_empty());
     }
 
     #[test]
