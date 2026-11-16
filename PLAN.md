@@ -43,7 +43,7 @@ En cas d'échec, le motif est dans `messages.value[].message` ou `errorSummary`.
 WebSocket `ws://hôte:8123/api/websocket` : recevoir `auth_required`, envoyer `{"type":"auth","access_token":…}`, recevoir `auth_ok`. Puis des commandes numérotées (`id` croissant) :
 
 - `recorder/statistics_during_period` (`statistic_ids`, `start_time`, `end_time`, `period: "day"`) → dernière somme connue (`start` en millisecondes Unix, `sum`).
-- `recorder/import_statistics` : `metadata` (`statistic_id`, `source`, `name`, `has_sum: true`, `has_mean: false`, `mean_type: 0`, `unit_class`, `unit_of_measurement`) et `stats: [{start, state, sum}]`, où `start` est minuit heure de Paris et `sum` le cumul.
+- `recorder/import_statistics` : `metadata` (`statistic_id`, `source`, `name`, `has_sum: true`, `has_mean: false`, `mean_type: 0`, `unit_class`, `unit_of_measurement`) et `stats: [{start, state, sum}]`, où `start` est minuit dans le fuseau de HA et `sum` le cumul.
 - `recorder/clear_statistics` (remise à zéro uniquement).
 - `get_config` → `time_zone` de HA : c'est le fuseau des jours (pas d'option de fuseau, voir §5).
 
@@ -145,7 +145,7 @@ src/
   error.rs       enum Error
   log.rs         journal horodaté sur stderr
   domain.rs      types du métier, sans entrée-sortie : Day, Quantity (millièmes), DailyReading, StatPoint, StatisticId
-  ports.rs       traits aux frontières : ConsumptionSource, StatisticsStore, Clock
+  ports.rs       traits aux frontières : ConsumptionSource, StatisticsStore (pas de trait d'horloge : la date du jour est un paramètre)
   sync.rs        algorithme d'un relevé (§3), ne dépend que de domain et ports
   readings.rs    relevés GRDF (JSON) → DailyReading (fonction pure)
   grdf/          implémente ConsumptionSource
@@ -159,7 +159,7 @@ src/
 tests/
   fixtures/      réponses GRDF et HA anonymisées
   support/       faux serveurs GRDF et HA (std uniquement)
-  ha_reel.rs     essai contre un vrai conteneur Home Assistant (ignoré par défaut)
+  ha_real.rs     essai contre un vrai conteneur Home Assistant (ignoré par défaut)
 ```
 
 Règles de dépendance entre modules :
@@ -206,7 +206,8 @@ Aucune dépendance de test : `#[test]` standard, faux serveurs écrits avec `std
 | `ha/websocket` | exemples de la RFC 6455, longueurs 7/16/64 bits, masquage, fragmentation, ping/pong, fermeture, trame invalide |
 | `ha/session` | séquence d'authentification, numérotation des messages, réponse d'erreur |
 | `ha/stats` | forme exacte des messages `import_statistics`, lecture de la dernière somme, minuit de Paris aux changements d'heure |
-| `sync` | premier import, relevé sans nouveauté (rien envoyé), fenêtre de recouvrement, jour vide rempli plus tard, correction d'une valeur, cumul repris au bon point, délai minimal entre logins, erreur non fatale |
+| `sync` | premier import, relevé sans nouveauté (rien envoyé), fenêtre de recouvrement, jour vide rempli plus tard, correction d'une valeur, cumul repris au bon point, simulation sans écriture |
+| `cli` | boucle du démon : erreur non fatale, intervalle respecté après une erreur, arrêt des connexions GRDF après un refus d'identifiants |
 
 Au-dessus des tests unitaires, deux niveaux plus légers :
 
