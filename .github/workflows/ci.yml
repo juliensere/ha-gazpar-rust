@@ -5,8 +5,8 @@
 #
 # Publication (tag vAAAA.M.N, image multi-architecture) : release.yml.
 #
-# TODO : plafond de taille du binaire. L'image arm64, compilée sous émulation
-#   QEMU, n'est construite qu'à la publication ; ici, l'image amd64 seule.
+# L'image arm64, compilée sous émulation QEMU, n'est construite qu'à la
+# publication ; ici, l'image amd64 seule.
 
 name: CI
 
@@ -55,6 +55,56 @@ jobs:
       # à jour, concordance HA_VERSION / Cargo.toml.
       - run: make check
 
+  cover:
+    name: Couverture des tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Chaîne de compilation de rust-toolchain.toml
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --component llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Installation de cargo-llvm-cov
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      # Échoue sous COVER_MIN % de lignes couvertes (Makefile, PLAN.md §8).
+      - run: make cover
+
+  # PLAN.md §10.2 : une pull request qui modifie src/ met à jour CHANGELOG.md,
+  # sauf si son titre contient [sans changelog].
+  changelog:
+    name: Notes de version à jour
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: src/ modifié sans CHANGELOG.md
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          changed=$(git diff --name-only "$BASE"...HEAD)
+          if printf '%s\n' "$changed" | grep -q '^src/' \
+             && ! printf '%s\n' "$changed" | grep -qx 'CHANGELOG.md' \
+             && [[ "$TITLE" != *"[sans changelog]"* ]]; then
+            echo "::error::src/ est modifié mais pas CHANGELOG.md (ajoutez [sans changelog] au titre si aucun changement n'est visible)"
+            exit 1
+          fi
+
   build:
     name: Compilation release x86_64 (statique)
     runs-on: ubuntu-24.04
@@ -89,6 +139,13 @@ jobs:
           size=$(stat -c %s "$bin")
           echo "ha-gazpar ($TARGET) : $size octets"
           echo "**ha-gazpar ($TARGET)** : $size octets" >> "$GITHUB_STEP_SUMMARY"
+          # Plafond (PLAN.md §9) : 2 417 616 octets mesurés le 2026-11-16,
+          # plus une marge. Le relever exige une justification.
+          max=3145728
+          if [ "$size" -gt "$max" ]; then
+            echo "::error::binaire de $size octets, plafond $max"
+            exit 1
+          fi
 
   # Détecte tôt une casse du Dockerfile ; rien n'est poussé.
   image:
