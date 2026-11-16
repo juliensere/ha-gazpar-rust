@@ -18,13 +18,13 @@
 //! Les valeurs sont des secrets (session, e-mail du cookie `ln`) : `Debug`
 //! ne montre que les noms. L'heure est passée en paramètre pour les tests.
 //!
-//! Fonctions pures. Dépendances : `grdf::url`, `jiff`.
+//! Fonctions pures. Dépendances : `url`, `jiff`.
 
 use std::fmt;
 
 use jiff::{SignedDuration, Timestamp};
 
-use super::url::Url;
+use crate::url::Url;
 
 /// Au-delà, un `Set-Cookie` est ignoré (protection contre un serveur fou).
 const MAX_COOKIE_LEN: usize = 4096;
@@ -295,7 +295,7 @@ mod tests {
     use super::*;
 
     fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
+        Url::http(s).unwrap()
     }
 
     fn ts(s: &str) -> Timestamp {

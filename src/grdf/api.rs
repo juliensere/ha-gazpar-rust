@@ -17,7 +17,7 @@
 //! Les décisions (fenêtres, délais, reprise) sont des fonctions pures.
 //! L'analyse des relevés est déléguée à [`crate::readings`].
 //!
-//! Dépendances : `grdf::http`, `grdf::auth`, `grdf::url`, `readings`,
+//! Dépendances : `grdf::http`, `grdf::auth`, `url`, `readings`,
 //! `domain`, `ports`, `secret`, `error`, `log`, `jiff`, `serde_json`.
 
 use std::time::Duration;
@@ -28,11 +28,11 @@ use serde_json::Value;
 
 use super::auth::{self, Credentials};
 use super::http::{AllowedHosts, HttpClient, Response};
-use super::url::Url;
 use crate::domain::DailyReading;
 use crate::error::Error;
 use crate::ports::ConsumptionSource;
 use crate::readings;
+use crate::url::Url;
 
 /// Tentatives au plus pour un appel (PyGazpar : 10).
 pub const MAX_ATTEMPTS: u32 = 4;
@@ -83,7 +83,7 @@ impl GrdfClient {
     pub fn new(settings: GrdfSettings, sleep: Sleeper) -> Result<GrdfClient, Error> {
         let base_url = settings.base_url.trim_end_matches('/').to_owned();
         let login_url = settings.login_url.trim_end_matches('/').to_owned();
-        let base = Url::parse(&base_url)?;
+        let base = Url::http(&base_url)?;
         let allowed = AllowedHosts::from_urls(&[&base_url, &login_url])?;
         let api_prefix = format!("{}/api", base.redacted().trim_end_matches('/'));
         Ok(GrdfClient {
@@ -360,7 +360,7 @@ mod tests {
     fn response(status: u16, content_type: &str, url: &str) -> Response {
         Response {
             status,
-            final_url: Url::parse(url).unwrap(),
+            final_url: Url::http(url).unwrap(),
             content_type: (!content_type.is_empty()).then(|| content_type.to_owned()),
             body: String::new(),
             retry_after: None,

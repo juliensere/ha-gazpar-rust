@@ -10,6 +10,9 @@
 //!   `ports` ne dépend que de `domain` et `error`.
 //! - `sync` et `readings` ne font aucune entrée-sortie : ni réseau, ni
 //!   horloge, ni environnement.
+//! - `url` est le seul analyseur d'adresse (`http`, `https`, `ws`) : module
+//!   neutre, bibliothèque standard seulement, partagé par `grdf`, `ha` et
+//!   `config` ; il ne dépend que de `error`.
 //! - `grdf` et `ha` ne se connaissent pas ; seul `app` (racine de
 //!   composition) les assemble et construit les vrais clients. `cli` analyse
 //!   la ligne de commande, aiguille et met en forme ; `daemon` cadence les
@@ -35,6 +38,7 @@ pub mod ports;
 pub mod readings;
 pub mod secret;
 pub mod sync;
+pub mod url;
 
 pub use error::Error;
 

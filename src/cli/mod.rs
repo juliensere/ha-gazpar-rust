@@ -759,6 +759,26 @@ mod tests {
     }
 
     #[test]
+    fn invalid_ha_url_is_a_configuration_error() {
+        fn bad_port(command_line: &CommandLine) -> Loaded {
+            let mut env = valid_env();
+            env.insert("HA_URL".into(), "ws://ha:abc".into());
+            config::load(command_line, &env, &NoFiles)
+        }
+        for cmd in ["check", "once", "run", "reset"] {
+            let mut connector = FakeConnector::default();
+            let (code, out, err) = launch_with(&[cmd], bad_port, &mut connector, &mut Vec::new());
+            assert_eq!(code, 2, "{cmd} : {err}");
+            assert!(out.is_empty(), "{cmd} : {out}");
+            assert!(
+                err.contains("HA_URL (environnement) : adresse invalide : port invalide"),
+                "{cmd} : {err}"
+            );
+            assert_eq!(connector.seen.borrow().ha_connections, 0, "{cmd}");
+        }
+    }
+
+    #[test]
     fn other_commands_validate_config_first() {
         for cmd in ["run", "once", "reset"] {
             let (code, _, err) = launch(&[cmd], incomplete_config);

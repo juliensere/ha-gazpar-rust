@@ -49,15 +49,15 @@
 //!
 //! L'analyse des réponses est faite par des fonctions pures.
 //!
-//! Dépendances : `grdf::http`, `grdf::url`, `secret`, `error`, `log`,
+//! Dépendances : `grdf::http`, `url`, `secret`, `error`, `log`,
 //! `serde_json`.
 
 use serde_json::{Value, json};
 
 use super::http::{AllowedHosts, HttpClient};
-use super::url::Url;
 use crate::error::Error;
 use crate::secret::Secret;
+use crate::url::Url;
 
 pub const IDENTIFY_PATH: &str = "/idp/idx/identify";
 pub const CHALLENGE_PATH: &str = "/idp/idx/challenge/answer";
@@ -341,7 +341,7 @@ pub fn check_remediation(body: &Value, expected_href: &str) -> Option<String> {
         ));
     };
     let href = challenge.get("href").and_then(Value::as_str).unwrap_or("");
-    let shown = |h: &str| Url::parse(h).map_or_else(|_| "illisible".to_owned(), |u| u.redacted());
+    let shown = |h: &str| Url::http(h).map_or_else(|_| "illisible".to_owned(), |u| u.redacted());
     (shown(href) != shown(expected_href)).then(|| {
         format!(
             "l'étape « challenge-authenticator » vise {} au lieu de {}",
@@ -363,7 +363,7 @@ pub fn read_success_href(body: &Value) -> Option<String> {
 /// `success.href` ne doit mener qu'à un hôte autorisé ; l'erreur ne nomme
 /// que l'hôte (la requête porte un jeton).
 pub fn check_success_href(href: &str, allowed: &AllowedHosts) -> Result<(), Error> {
-    let url = Url::parse(href)
+    let url = Url::http(href)
         .map_err(|_| Error::GrdfLogin("fin de connexion : success.href illisible".to_owned()))?;
     if allowed.allows(url.host()) {
         Ok(())

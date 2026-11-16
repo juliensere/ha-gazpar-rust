@@ -26,7 +26,7 @@
 //!   tampons en mémoire ; seul [`connect`] touche au réseau. [`Role::Server`]
 //!   n'existe que pour le faux Home Assistant des tests.
 //!
-//! Dépendances : `error` et la bibliothèque standard.
+//! Dépendances : `url`, `error` et la bibliothèque standard.
 
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::io::{self, BufReader, ErrorKind, Read, Write};
@@ -34,6 +34,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::error::Error;
+use crate::url::Url;
 
 /// Taille maximale d'un message reçu, fragments réunis (16 Mio).
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
@@ -344,10 +345,10 @@ impl<S: Read + Write> WebSocket<S> {
 
 /// Ouvre une connexion WebSocket vers `ws://hôte[:port][/chemin]`.
 pub fn connect(url: &str, timeouts: Timeouts) -> Result<WebSocket<TcpStream>, Error> {
-    let target = Target::parse(url)?;
-    let addrs = (target.host.as_str(), target.port)
+    let target = Target::new(Url::ws(url)?);
+    let addrs = (target.socket_host(), target.port())
         .to_socket_addrs()
-        .map_err(|e| Error::Io(format!("résolution de {} : {e}", target.host)))?;
+        .map_err(|e| Error::Io(format!("résolution de {} : {e}", target.socket_host())))?;
     let mut last_error = String::from("aucune adresse");
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, timeouts.connect) {
@@ -359,8 +360,8 @@ pub fn connect(url: &str, timeouts: Timeouts) -> Result<WebSocket<TcpStream>, Er
                 let mut ws = WebSocket::new(stream, Role::Client);
                 let nonce = [ws.noise.next_u64(), ws.noise.next_u64()].map(u64::to_le_bytes);
                 ws.handshake(
-                    &target.host_header(),
-                    &target.path,
+                    &target.0.authority(),
+                    &target.0.path_and_query(),
                     &base64(&nonce.concat()),
                 )?;
                 return Ok(ws);
@@ -370,7 +371,8 @@ pub fn connect(url: &str, timeouts: Timeouts) -> Result<WebSocket<TcpStream>, Er
     }
     Err(Error::Io(format!(
         "connexion à {}:{} impossible : {last_error}",
-        target.host, target.port
+        target.socket_host(),
+        target.port()
     )))
 }
 
@@ -379,74 +381,25 @@ pub fn accept_key(key: &str) -> String {
     base64(&sha1(format!("{key}{ACCEPT_GUID}").as_bytes()))
 }
 
-/// Destination tirée d'une URL `ws://`.
-#[derive(Debug, PartialEq, Eq)]
-struct Target {
-    /// Hôte sans crochets (adresse IPv6 comprise).
-    host: String,
-    port: u16,
-    /// Chemin et requête ; commence par `/`.
-    path: String,
-}
+/// Vue de connexion d'une adresse `ws://` analysée par [`crate::url`] :
+/// hôte pour le système (sans crochets), port (80 par défaut).
+struct Target(Url);
 
 impl Target {
-    fn parse(url: &str) -> Result<Target, Error> {
-        let invalid = |why: &str| Error::Invalid(format!("URL WebSocket {url:?} : {why}"));
-        let rest = url
-            .strip_prefix("ws://")
-            .ok_or_else(|| invalid("seul ws:// est pris en charge"))?;
-        let rest = rest.split('#').next().unwrap_or_default();
-        let (authority, path) = rest.split_at(rest.find(['/', '?']).unwrap_or(rest.len()));
-        let path = match path {
-            "" => "/".to_owned(),
-            p if p.starts_with('?') => format!("/{p}"),
-            p => p.to_owned(),
-        };
-        if path.chars().any(|c| c.is_whitespace() || c.is_control()) || authority.contains('@') {
-            return Err(invalid("caractère interdit"));
-        }
-        let (host, port) = match authority.strip_prefix('[') {
-            Some(v6) => {
-                let (host, after) = v6
-                    .split_once(']')
-                    .ok_or_else(|| invalid("crochet non fermé"))?;
-                (host, after.strip_prefix(':'))
-            }
-            None => match authority.rsplit_once(':') {
-                Some((host, port)) => (host, Some(port)),
-                None => (authority, None),
-            },
-        };
-        if host.is_empty() || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
-            return Err(invalid("hôte manquant ou invalide"));
-        }
-        let port = match port {
-            None => 80,
-            Some(p) => p
-                .parse()
-                .ok()
-                .filter(|&p| p != 0)
-                .ok_or_else(|| invalid("port invalide"))?,
-        };
-        Ok(Target {
-            host: host.to_owned(),
-            port,
-            path,
-        })
+    fn new(url: Url) -> Target {
+        Target(url)
     }
 
-    /// Valeur de l'en-tête `Host`.
-    fn host_header(&self) -> String {
-        let host = if self.host.contains(':') {
-            format!("[{}]", self.host)
-        } else {
-            self.host.clone()
-        };
-        if self.port == 80 {
-            host
-        } else {
-            format!("{host}:{}", self.port)
-        }
+    /// Hôte à résoudre : une adresse IPv6 perd ses crochets.
+    fn socket_host(&self) -> &str {
+        let host = self.0.host();
+        host.strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host)
+    }
+
+    fn port(&self) -> u16 {
+        self.0.port_or_default()
     }
 }
 
@@ -1053,30 +1006,25 @@ mod tests {
     }
 
     #[test]
-    fn url_parsing() {
-        let t = |url: &str| Target::parse(url).unwrap();
-        assert_eq!(
-            t("ws://192.168.0.88:8123/api/websocket"),
-            Target {
-                host: "192.168.0.88".into(),
-                port: 8123,
-                path: "/api/websocket".into()
-            }
-        );
-        assert_eq!(
-            t("ws://ha.local"),
-            Target {
-                host: "ha.local".into(),
-                port: 80,
-                path: "/".into()
-            }
-        );
-        assert_eq!(t("ws://ha.local?x=1#frag").path, "/?x=1");
-        assert_eq!(t("ws://ha.local/x").host_header(), "ha.local");
-        assert_eq!(t("ws://ha.local:8123/x").host_header(), "ha.local:8123");
+    fn target_is_a_view_of_the_address() {
+        let t = |url: &str| Target::new(Url::ws(url).unwrap());
+        let ha = t("ws://192.168.0.88:8123/api/websocket");
+        assert_eq!((ha.socket_host(), ha.port()), ("192.168.0.88", 8123));
+        assert_eq!(ha.0.authority(), "192.168.0.88:8123");
+        assert_eq!(ha.0.path_and_query(), "/api/websocket");
+        let plain = t("ws://ha.local");
+        assert_eq!((plain.socket_host(), plain.port()), ("ha.local", 80));
+        assert_eq!(plain.0.authority(), "ha.local");
+        assert_eq!(plain.0.path_and_query(), "/");
+        assert_eq!(t("ws://ha.local?x=1#frag").0.path_and_query(), "/?x=1");
+        assert_eq!(t("ws://ha.local:80/x").0.authority(), "ha.local");
         let v6 = t("ws://[::1]:8124/api/websocket");
-        assert_eq!((v6.host.as_str(), v6.port), ("::1", 8124));
-        assert_eq!(v6.host_header(), "[::1]:8124");
+        assert_eq!((v6.socket_host(), v6.port()), ("::1", 8124));
+        assert_eq!(v6.0.authority(), "[::1]:8124");
+    }
+
+    #[test]
+    fn connect_refuses_invalid_addresses_without_echo() {
         for bad in [
             "wss://h/",
             "http://h/",
@@ -1085,15 +1033,20 @@ mod tests {
             "ws://h:0/",
             "ws://h:99999/",
             "ws://h:x/",
-            "ws://u@h/",
+            "ws://h:/",
+            "ws://secret@h/",
             "ws://h/a b",
             "ws://[::1/",
             "ws://h/\r\nX: y",
         ] {
-            assert!(
-                matches!(Target::parse(bad), Err(Error::Invalid(_))),
-                "{bad:?} aurait dû être refusée"
-            );
+            match connect(bad, quick()) {
+                Err(Error::Protocol(m)) => {
+                    assert!(m.starts_with("adresse invalide : "), "{bad:?} : {m}");
+                    assert!(!m.contains("secret"), "{m}");
+                }
+                Err(e) => panic!("{bad:?} : {e:?}"),
+                Ok(_) => panic!("{bad:?} aurait dû être refusée"),
+            }
         }
     }
 

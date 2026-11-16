@@ -24,7 +24,7 @@
 //! ni corps de requête n'apparaît dans un journal ou une erreur.
 //!
 //! Dépendances : `ureq`, `jiff`, `serde_json`, `error`, `log`,
-//! `grdf::url`, `grdf::cookies`.
+//! `url`, `grdf::cookies`.
 
 use std::fmt;
 use std::time::Duration;
@@ -32,8 +32,8 @@ use std::time::Duration;
 use jiff::Timestamp;
 
 use super::cookies::CookieJar;
-use super::url::Url;
 use crate::error::Error;
+use crate::url::Url;
 
 /// `User-Agent` envoyé, celui de PyGazpar.
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
@@ -79,7 +79,7 @@ impl AllowedHosts {
     pub fn from_urls(urls: &[&str]) -> Result<AllowedHosts, Error> {
         let mut rules = Vec::new();
         for url in urls {
-            let rule = HostRule::for_configured(Url::parse(url)?.host());
+            let rule = HostRule::for_configured(Url::http(url)?.host());
             if !rules.contains(&rule) {
                 rules.push(rule);
             }
@@ -260,7 +260,7 @@ impl HttpClient {
         query: &[(&str, &str)],
         headers: &[(&str, &str)],
     ) -> Result<Response, Error> {
-        let url = Url::parse(url)?.with_query(query);
+        let url = Url::http(url)?.with_query(query);
         self.execute(Method::Get, url, headers, None)
     }
 
@@ -272,7 +272,7 @@ impl HttpClient {
         body: &serde_json::Value,
         headers: &[(&str, &str)],
     ) -> Result<Response, Error> {
-        let url = Url::parse(url)?;
+        let url = Url::http(url)?;
         let mut all: Vec<(&str, &str)> = headers.to_vec();
         if !all
             .iter()
@@ -285,7 +285,7 @@ impl HttpClient {
 
     /// Pose un cookie de session pour l'hôte de `url`.
     pub fn set_cookie(&mut self, name: &str, value: &str, url: &str) -> Result<(), Error> {
-        self.jar.insert(name, value, &Url::parse(url)?);
+        self.jar.insert(name, value, &Url::http(url)?);
         Ok(())
     }
 
@@ -701,13 +701,33 @@ mod tests {
 
     #[test]
     fn redirect_to_other_scheme_is_refused_without_echo() {
-        let (mut client, _) = scripted(vec![raw(
-            302,
-            &[("Location", "ftp://h.fr/x?code=SECRET")],
-            "",
-        )]);
-        let e = client.get("https://h.fr/", &[], &[]).unwrap_err();
-        assert!(!e.to_string().contains("SECRET"), "{e}");
+        for location in [
+            "ftp://h.fr/x?code=SECRET",
+            "ws://h.fr/x?code=SECRET",
+            "wss://h.fr/x?code=SECRET",
+        ] {
+            let (mut client, seen) = scripted(vec![
+                raw(302, &[("Location", location)], ""),
+                raw(200, &[], "ne doit pas être lu"),
+            ]);
+            let e = client.get("https://h.fr/", &[], &[]).unwrap_err();
+            assert_eq!(
+                e,
+                Error::Protocol(
+                    "adresse invalide : seuls http:// et https:// sont pris en charge".into()
+                ),
+                "{location}"
+            );
+            assert_eq!(seen.borrow().len(), 1, "{location} : rien n'est envoyé");
+        }
+    }
+
+    #[test]
+    fn request_to_websocket_address_is_refused_before_sending() {
+        let (mut client, seen) = scripted(vec![raw(200, &[], "")]);
+        assert!(client.get("ws://h.fr/", &[], &[]).is_err());
+        assert!(AllowedHosts::from_urls(&["ws://h.fr"]).is_err());
+        assert!(seen.borrow().is_empty());
     }
 
     // --- Hôtes autorisés ---
@@ -857,7 +877,7 @@ mod tests {
     fn response_debug_hides_body_and_query() {
         let r = Response {
             status: 200,
-            final_url: Url::parse("https://h.fr/x?stateToken=SECRET").unwrap(),
+            final_url: Url::http("https://h.fr/x?stateToken=SECRET").unwrap(),
             content_type: None,
             body: "SECRET-BODY".into(),
             retry_after: None,

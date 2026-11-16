@@ -16,6 +16,9 @@
 //!   (un paramètre vide est refusé plus tôt, par `cli`) ;
 //! - les chemins `…_FILE` sont absolus ; l'espace final du contenu est
 //!   retiré ;
+//! - `HA_URL` et les adresses de développement sont analysées par
+//!   [`crate::url`], le même analyseur que celui des connexions : une adresse
+//!   acceptée ici ne peut pas être refusée à la connexion ;
 //! - `GRDF_BASE_URL` et `GRDF_LOGIN_URL` (développement) ne sont lues que dans
 //!   l'environnement, et seulement vers `localhost` ou `127.0.0.1` ;
 //! - tous les problèmes sont relevés d'un coup dans une seule
@@ -33,8 +36,8 @@
 //! forme de table et l'accès aux fichiers par le trait [`FileSystem`] ;
 //! [`load_from_process`] les branche sur la bibliothèque standard.
 //!
-//! Dépendances : `config_file`, `domain`, `secret`, `log` (type `Level`),
-//! `error`.
+//! Dépendances : `config_file`, `domain`, `secret`, `url`, `log` (type
+//! `Level`), `error`.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -46,6 +49,7 @@ use crate::domain::{Measure, StatisticId};
 use crate::error::Error;
 use crate::log::Level;
 use crate::secret::Secret;
+use crate::url::{InvalidUrl, Url};
 
 /// Adresse de Mon Espace GRDF.
 pub const DEFAULT_GRDF_BASE_URL: &str = "https://monespace.grdf.fr";
@@ -872,11 +876,10 @@ impl Loader<'_> {
     /// Adresse GRDF surchargeable pour le développement, dans l'environnement
     /// seulement, vers `localhost` ou `127.0.0.1` uniquement.
     fn dev_url(&mut self, name: &'static str, default: &str, rows: &mut Vec<Setting>) -> String {
-        let Some(url) = self.env_value(name) else {
+        let Some(text) = self.env_value(name) else {
             return default.to_owned();
         };
-        if is_local_url(url) {
-            let url = url.trim_end_matches('/').to_owned();
+        if let Some(url) = local_url(text) {
             rows.push(row(name, &url, Origin::direct(Source::Environment)));
             url
         } else {
@@ -968,56 +971,49 @@ fn parse_number(raw: &str, min: u32, max: u32, unit: &str) -> Result<u32, String
     }
 }
 
-/// Valide l'URL Home Assistant et ajoute `/api/websocket` si elle n'a pas
-/// de chemin.
-fn check_ha_url(url: &str) -> Result<String, String> {
-    if url.starts_with("wss://") {
-        return Err(
+/// Exemple d'adresse de Home Assistant, cité dans les messages.
+const HA_URL_EXAMPLE: &str = "ex. ws://192.168.1.10:8123";
+
+/// Valide l'URL Home Assistant avec l'analyseur de connexion
+/// ([`Url::ws`]) et ajoute `/api/websocket` si elle n'a pas de chemin.
+/// Requête (`?`) et fragment (`#`) sont refusés : l'API WebSocket de HA n'en
+/// a pas l'usage. Rend la forme normalisée (schéma et hôte en minuscules).
+fn check_ha_url(text: &str) -> Result<String, String> {
+    if text
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("wss://"))
+    {
+        return Err(format!(
             "wss:// (WebSocket chiffré) n'est pas pris en charge ; utiliser ws:// vers \
-             Home Assistant sur le réseau local, ex. ws://192.168.1.10:8123"
-                .to_owned(),
-        );
+             Home Assistant sur le réseau local, {HA_URL_EXAMPLE}"
+        ));
     }
-    let Some(rest) = url.strip_prefix("ws://") else {
-        return Err("doit commencer par ws://, ex. ws://192.168.1.10:8123".to_owned());
-    };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(authority_end);
-    if authority.is_empty() || authority.starts_with(':') {
-        return Err("hôte manquant après ws://".to_owned());
+    let url = Url::ws(text).map_err(|e| match e {
+        InvalidUrl::Scheme(_) => format!("doit commencer par ws://, {HA_URL_EXAMPLE}"),
+        InvalidUrl::Credentials => {
+            "identifiants dans l'URL non pris en charge (utiliser HA_TOKEN)".to_owned()
+        }
+        other => format!("adresse invalide : {other} ({HA_URL_EXAMPLE})"),
+    })?;
+    if text.contains(['?', '#']) {
+        return Err(format!(
+            "requête (?) et fragment (#) non pris en charge ({HA_URL_EXAMPLE})"
+        ));
     }
-    if authority.contains('@') {
-        return Err("identifiants dans l'URL non pris en charge (utiliser HA_TOKEN)".to_owned());
-    }
-    Ok(match tail {
-        "" => format!("{url}{HA_WEBSOCKET_PATH}"),
-        "/" => format!("ws://{authority}{HA_WEBSOCKET_PATH}"),
-        _ => url.to_owned(),
+    Ok(if url.path() == "/" {
+        format!("{}{HA_WEBSOCKET_PATH}", url.origin())
+    } else {
+        url.full()
     })
 }
 
-/// L'URL désigne-t-elle `localhost` ou `127.0.0.1` (port facultatif) ?
-fn is_local_url(url: &str) -> bool {
-    let Some(rest) = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-    else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.contains('@') {
-        return false;
-    }
-    let host = match authority.split_once(':') {
-        Some((host, port)) => {
-            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-                return false;
-            }
-            host
-        }
-        None => authority,
-    };
-    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1"
+/// Adresse de développement analysée par [`Url::http`], vers `localhost`
+/// ou `127.0.0.1` seulement, sans requête ni fragment ; `None` sinon. Rend
+/// la forme normalisée, sans `/` final.
+fn local_url(text: &str) -> Option<String> {
+    let url = Url::http(text).ok()?;
+    let local = matches!(url.host(), "localhost" | "127.0.0.1");
+    (local && !text.contains(['?', '#'])).then(|| url.full().trim_end_matches('/').to_owned())
 }
 
 #[cfg(test)]
@@ -1685,6 +1681,66 @@ mod tests {
     }
 
     #[test]
+    fn ha_url_is_checked_by_the_connection_parser() {
+        // Refusées ici, et non plus seulement à la connexion (code 1, puis
+        // nouvel essai toutes les 8 h par le démon).
+        for (bad, why) in [
+            ("ws://ha:abc", "adresse invalide : port invalide"),
+            ("ws://ha:0", "adresse invalide : port invalide"),
+            ("ws://ha:", "adresse invalide : port invalide"),
+            (
+                "ws://ha:99999/api/websocket",
+                "adresse invalide : port invalide",
+            ),
+            (
+                "ws://[::1/api/websocket",
+                "adresse invalide : hôte manquant ou invalide",
+            ),
+            (
+                "ws://[secret]:8123",
+                "adresse invalide : hôte manquant ou invalide",
+            ),
+            (
+                "ws://ha/api websocket",
+                "adresse invalide : espace ou caractère de contrôle dans l'adresse",
+            ),
+            (
+                "ws://ha:8123?x",
+                "requête (?) et fragment (#) non pris en charge",
+            ),
+            (
+                "ws://ha:8123/api/websocket?x=1",
+                "requête (?) et fragment (#)",
+            ),
+            ("ws://ha:8123#x", "requête (?) et fragment (#)"),
+            ("ws://ha:8123/#x", "requête (?) et fragment (#)"),
+        ] {
+            let p = single(from_env(&minimal_with(&[("HA_URL", bad)])));
+            assert!(
+                p.starts_with(&format!("HA_URL (environnement) : {why}")),
+                "{bad} : {p}"
+            );
+            assert!(p.ends_with("(ex. ws://192.168.1.10:8123)"), "{bad} : {p}");
+            assert!(!p.contains("secret"), "{p}");
+        }
+    }
+
+    #[test]
+    fn ha_url_ipv6_and_case() {
+        for (given, kept) in [
+            ("ws://[::1]:8123", "ws://[::1]:8123/api/websocket"),
+            ("WS://HA.Local:8123/", "ws://ha.local:8123/api/websocket"),
+            (
+                "ws://[fd00::1]/api/websocket",
+                "ws://[fd00::1]/api/websocket",
+            ),
+        ] {
+            let c = accepted(from_env(&minimal_with(&[("HA_URL", given)])));
+            assert_eq!(c.ha_url, kept, "{given}");
+        }
+    }
+
+    #[test]
     fn numeric_bounds() {
         assert_eq!(
             single(from_env(&minimal_with(&[("GAZPAR_SCAN_INTERVAL", "59")]))),
@@ -1763,13 +1819,13 @@ mod tests {
 
     #[test]
     fn dev_urls_only_towards_localhost() {
-        for ok in [
-            "http://localhost",
-            "http://localhost:8080/x",
-            "https://127.0.0.1:8443",
-            "http://LOCALHOST:1/",
+        for (ok, kept) in [
+            ("http://localhost", "http://localhost"),
+            ("http://localhost:8080/x", "http://localhost:8080/x"),
+            ("https://127.0.0.1:8443", "https://127.0.0.1:8443"),
+            ("http://LOCALHOST:1/", "http://localhost:1"),
         ] {
-            assert!(is_local_url(ok), "{ok} devrait être accepté");
+            assert_eq!(local_url(ok).as_deref(), Some(kept), "{ok}");
         }
         for bad in [
             "http://localhost.evil.com",
@@ -1779,12 +1835,18 @@ mod tests {
             "http://localhost:80@evil.com",
             "http://localhost:",
             "http://localhost:80x",
+            "http://localhost:0",
+            "http://localhost:+80",
+            "http://localhost/?x=1",
+            "http://localhost/#x",
             "ftp://localhost",
+            "ws://localhost",
             "localhost",
             "https://monespace.grdf.fr",
             "http://[::1]:8080",
+            "http://127.0.0.2",
         ] {
-            assert!(!is_local_url(bad), "{bad} devrait être refusé");
+            assert_eq!(local_url(bad), None, "{bad} devrait être refusé");
         }
     }
 
