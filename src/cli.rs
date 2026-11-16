@@ -249,6 +249,7 @@ pub fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, Er
                 invocation.yes = true;
             }
             "--version" => return Err(usage_error("--version s'emploie seul")),
+            "--help" => return Err(usage_error("--help ne prend pas de valeur")),
             "--config" => {
                 let value = take_value(&name, inline, rest, &mut index)?;
                 invocation.config.config_path = Some(value);
@@ -662,6 +663,10 @@ mod tests {
         assert_eq!(
             usage_message(&["reset", "--yes=oui"]),
             "--yes ne prend pas de valeur"
+        );
+        assert_eq!(
+            usage_message(&["check", "--help=oui"]),
+            "--help ne prend pas de valeur"
         );
     }
 
