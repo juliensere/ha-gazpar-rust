@@ -17,3 +17,4 @@ Le format suit [Keep a Changelog](https://keepachangelog.com/fr/). Les numéros 
 - `HA_URL` en `wss://` refusé avec un message explicite (seul `ws://` est pris en charge).
 - Journal horodaté sur la sortie d'erreur, niveaux `info` et `debug`.
 - Harnais de développement (`make check`, `test`, `lint`, `deny`, `crates`, `deps`, `cover`, `release`…), politique de dépendances (`deny.toml`) et inventaire des dépendances ([DEPENDENCIES.md](DEPENDENCIES.md)) : 3 dépendances directes, 29 crates, plafond 32.
+- Intégration continue GitHub Actions : `make check` à chaque push et pull request, compilation statique x86_64 avec taille du binaire, vérification hebdomadaire des avis de sécurité ; Dependabot limité aux mises à jour de sécurité.

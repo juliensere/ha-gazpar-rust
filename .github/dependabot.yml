@@ -1,0 +1,18 @@
+# Veille de sécurité sans bruit (PLAN.md §4.3) : aucune mise à jour de
+# version (open-pull-requests-limit: 0). Seules les mises à jour de sécurité
+# passent : elles sont déclenchées par les alertes Dependabot, à activer dans
+# les réglages du dépôt (Dependabot alerts + security updates), et ne sont
+# pas soumises à cette limite.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
