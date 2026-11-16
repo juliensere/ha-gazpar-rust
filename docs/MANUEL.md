@@ -299,7 +299,7 @@ Le journal est écrit sur la sortie d'erreur (`docker logs`), une ligne par év�
 
 ```
 2026-11-16T07:00:02Z INFO relevé : 3 jours importés, dernier jour connu 2026-11-13
-2026-11-16T15:00:01Z ATTENTION GRDF injoignable, nouvel essai au prochain relevé
+2026-11-16T15:00:01Z ATTENTION HTTP : GRDF injoignable (délai dépassé) ; nouvel essai au prochain relevé, dans 480 min
 ```
 
 Niveaux : `ERREUR`, `ATTENTION`, `INFO`, et `DEBUG` si `GAZPAR_LOG_LEVEL=debug`. **Aucun niveau** n'écrit le mot de passe, le jeton, les cookies ni l'e-mail du compte.
@@ -315,9 +315,12 @@ Niveaux : `ERREUR`, `ATTENTION`, `INFO`, et `DEBUG` si `GAZPAR_LOG_LEVEL=debug`.
 | Symptôme | Cause probable | Que faire |
 |---|---|---|
 | `connexion à GRDF refusée` | mauvais identifiants, ou identifiants du fournisseur au lieu de GRDF | vérifiez-les sur monespace.grdf.fr, corrigez la configuration, puis **redémarrez** le service (voir [§9](#9-sécurité-et-protection-du-compte-grdf)) |
-| `PCE inconnu` | PCE mal recopié, ou compteur non rattaché au compte | comparez avec Mon Espace GRDF |
+| `échec de la connexion à GRDF` | le parcours de connexion de GRDF a changé ou est en panne ; ce n'est pas un refus des identifiants | réessayé automatiquement au relevé suivant ; si cela dure, consultez les tickets du projet |
+| `GRDF injoignable` | réseau ou site GRDF indisponible | réessayé automatiquement au relevé suivant |
+| `le PCE … n'est pas rattaché à ce compte GRDF` | PCE mal recopié, ou compteur non rattaché au compte | comparez avec Mon Espace GRDF |
 | `Home Assistant : authentification refusée` | jeton invalide ou révoqué, ou utilisateur non administrateur | créez un nouveau jeton avec un utilisateur administrateur |
-| `Home Assistant injoignable` | adresse ou port faux, HA arrêté | vérifiez `HA_URL` (`ws://`, port 8123 en général) |
+| `Home Assistant injoignable`, ou `délai dépassé sur la connexion WebSocket` | adresse ou port faux, HA arrêté ou surchargé | vérifiez `HA_URL` (`ws://`, port 8123 en général) |
+| `HA_URL … adresse invalide` (code 2) | adresse mal écrite | corrigez `HA_URL` : `ws://hôte:port`, sans `?` ni `#` |
 | rien dans le tableau de bord | délai de publication de GRDF, ou statistique non choisie | attendez 2 à 5 jours après la mise en service ; vérifiez [§6](#6-tableau-de-bord-énergie) |
 | un jour manquant | GRDF n'avait pas la valeur | rattrapé automatiquement s'il est dans la fenêtre de rattrapage ; sinon lancez une fois avec `--gazpar-overlap-days 60` |
 | historique faux à refaire | — | arrêtez le service, `docker compose run --rm ha-gazpar reset --yes`, redémarrez le service : le démarrage réimporte l'historique |

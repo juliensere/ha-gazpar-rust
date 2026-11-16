@@ -48,3 +48,4 @@ Chaque version publiée a une section dont l'en-tête est exactement `## [AAAA.M
 ### Corrections
 
 - `HA_URL` est vérifiée dès la configuration par le même analyseur d'adresse que la connexion : un port invalide (`ws://ha:abc`), une adresse IPv6 mal formée, un espace, une requête (`?`) ou un fragment (`#`) donnent une erreur de configuration (code 2) au lieu d'un échec à la connexion (code 1, retenté toutes les `GAZPAR_SCAN_INTERVAL` minutes par `run`).
+- Message d'erreur « GRDF injoignable » sans double préfixe après les reprises.

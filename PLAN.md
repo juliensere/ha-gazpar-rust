@@ -81,8 +81,8 @@ Total attendu : environ 30 crates (quelques-unes sont partagées), à figer à l
 
 | Besoin | Alternative écartée (mesure) | Choix |
 |---|---|---|
-| Cookies de session GRDF | option `cookies` de `ureq` : 67 crates au lieu de 22 | bocal à cookies maison (≈ 80 lignes), redirections suivies à la main pour lire `Set-Cookie` à chaque saut |
-| WebSocket vers HA | `tungstenite` 0.30 : 27 crates | client RFC 6455 minimal maison (≈ 200 lignes) : poignée de main, trames texte masquées, fragmentation, ping/pong, fermeture. Norme figée depuis 2011, pair de confiance (son propre HA). `ws://` uniquement ; si `wss://` devient nécessaire, repasser à `tungstenite` |
+| Cookies de session GRDF | option `cookies` de `ureq` : 67 crates au lieu de 22 | bocal à cookies maison (≈ 300 lignes hors tests, mesuré), redirections suivies à la main pour lire `Set-Cookie` à chaque saut |
+| WebSocket vers HA | `tungstenite` 0.30 : 27 crates | client RFC 6455 minimal maison (≈ 600 lignes hors tests avec SHA-1, base64 et rôle serveur pour les tests, mesuré) : poignée de main, trames texte masquées, fragmentation, ping/pong, fermeture. Norme figée depuis 2011, pair de confiance (son propre HA). `ws://` uniquement ; si `wss://` devient nécessaire, repasser à `tungstenite` |
 | Configuration | `clap`, YAML/TOML | variables d'environnement lues avec `std::env` |
 | Journal | `log` + backend | `eprintln!` horodaté, niveaux `info`/`debug` ; pas de fichier, Docker s'en charge |
 | Erreurs | `anyhow`, `thiserror` | un `enum Error` |
@@ -90,7 +90,7 @@ Total attendu : environ 30 crates (quelques-unes sont partagées), à figer à l
 
 Le WebSocket ne peut pas être évité : sur HA 2026.9.1, l'API REST expose bien l'action `recorder.get_statistics`, mais l'import de statistiques n'existe que par WebSocket (vérifié sur `/api/services`).
 
-Chaque morceau maison est isolé dans un module de moins de 200 lignes, couvert par des tests, derrière une interface étroite : on peut le remplacer par une crate sans toucher au reste.
+Chaque morceau maison est isolé dans son module, couvert par des tests, derrière une interface étroite : on peut le remplacer par une crate sans toucher au reste.
 
 Alternative mesurée pour HTTP : `minreq` 3.0 (`https-rustls`), 12 crates au lieu de 22. Écartée par défaut au profit de `ureq`, plus répandu ; à réévaluer à l'étape 4, le client HTTP étant confiné à `grdf/http.rs`.
 
@@ -136,37 +136,53 @@ Points structurants :
 
 ```
 src/
-  main.rs        lit les arguments et appelle la bibliothèque, rien d'autre
-  lib.rs         déclare les modules ; toute la logique est dans la bibliothèque
-  cli.rs         analyse de la ligne de commande, sous-commandes, boucle du démon ; seul module qui assemble grdf, ha et sync
-  config.rs      fusion des trois sources (paramètres, environnement, fichier), provenance de chaque valeur, validation
-  config_file.rs analyse du fichier NOM=valeur (fonction pure)
-  secret.rs      type Secret : Debug et Display masqués
-  error.rs       enum Error
-  log.rs         journal horodaté sur stderr
-  domain.rs      types du métier, sans entrée-sortie : Day, Quantity (millièmes), DailyReading, StatPoint, StatisticId
-  ports.rs       traits aux frontières : ConsumptionSource, StatisticsStore (pas de trait d'horloge : la date du jour est un paramètre)
-  sync.rs        algorithme d'un relevé (§3), ne dépend que de domain et ports
-  readings.rs    relevés GRDF (JSON) → DailyReading (fonction pure)
-  grdf/          implémente ConsumptionSource
-    http.rs      seul module qui touche à ureq : requêtes, bocal à cookies, redirections
-    auth.rs      login Okta IDX (§2.1)
-    api.rs       appels, reprises, expiration de session (§2.2)
-  ha/            implémente StatisticsStore
-    websocket.rs client RFC 6455 minimal (std uniquement)
-    session.rs   authentification HA, envoi/réponse des commandes
-    stats.rs     lecture de la dernière somme, import, effacement
+  main.rs          transmet les arguments à cli, rien d'autre
+  lib.rs           déclare les modules ; API publique réduite, frontière `testing` pour les faux serveurs
+  cli/
+    mod.rs         aiguillage des commandes, journal injecté, codes de sortie
+    args.rs        analyse de la ligne de commande
+    report.rs      mise en forme des sorties (fonctions pures)
+  app.rs           racine de composition : seul module qui construit les clients grdf et ha et appelle sync
+  daemon.rs        boucle de `run` (sommeil, relevé et journal injectés)
+  config/
+    mod.rs         Config, tableau de provenance affiché par check
+    options.rs     table des options et noms dérivés (variable, paramètre, clé de fichier)
+    loader.rs      fusion des trois sources, variantes _FILE, provenance
+    validate.rs    validations pures (PCE, nombres, adresses)
+  config_file.rs   analyse du fichier NOM=valeur (fonction pure)
+  url.rs           seul analyseur d'adresse (http, https, ws), partagé par config, grdf et ha
+  secret.rs        type Secret (Debug et Display masqués), expurgation des textes
+  error.rs         enum Error, code de sortie, is_transient (erreur passagère ou définitive)
+  log.rs           journal horodaté sur stderr
+  domain.rs        types du métier, sans entrée-sortie : Quantity (millièmes), DailyReading, StatPoint, StatisticId, Measure
+  ports.rs         traits aux frontières : ConsumptionSource, StatisticsStore (pas de trait d'horloge : la date du jour est un paramètre)
+  sync.rs          algorithme d'un relevé (§3), ne dépend que de domain, ports et error
+  readings.rs      relevés GRDF (JSON) → DailyReading (fonction pure)
+  grdf/            implémente ConsumptionSource
+    http.rs        seul module qui importe ureq : transport, redirections, liste blanche des hôtes
+    cookies.rs     bocal à cookies (RFC 6265 simplifiée)
+    auth.rs        connexion Okta IDX (§2.1), refus d'identifiants distingué
+    api.rs         appels, fenêtres de 365 jours, reprises, expiration de session (§2.2)
+  ha/              implémente StatisticsStore
+    websocket.rs   client RFC 6455 minimal (std uniquement), SHA-1 et base64 compris
+    session.rs     authentification HA, commandes numérotées
+    server.rs      get_config (fuseau), comparaison de version
+    stats.rs       lecture des points, import par lots, effacement
 tests/
-  fixtures/      réponses GRDF et HA anonymisées
-  support/       faux serveurs GRDF et HA (std uniquement)
-  ha_real.rs     essai contre un vrai conteneur Home Assistant (ignoré par défaut)
+  fixtures/        réponses GRDF anonymisées (extraits PyGazpar), fichiers de configuration
+  support/         faux serveurs GRDF et HA (std uniquement)
+  cli.rs           binaire : configuration et ligne de commande
+  commands.rs      binaire : run, once, check, reset contre les faux serveurs
+  grdf_client.rs   client GRDF contre le faux GRDF
+  ha_store.rs      client HA contre le faux HA
+  ha_real.rs       essai contre un vrai Home Assistant jetable (ignoré par défaut, make test-ha)
 ```
 
 Règles de dépendance entre modules :
 
-- `domain` ne dépend de rien ; `ports` ne dépend que de `domain`.
+- `domain` ne dépend que de `error` (et `jiff`) ; `ports` ne dépend que de `domain` et `error` ; `url`, `secret`, `error`, `config_file` ne dépendent d'aucun autre module.
 - `sync` et `readings` ne font aucune entrée-sortie : ni réseau, ni horloge, ni environnement. `sync` se teste avec des implémentations en mémoire des traits de `ports`.
-- `grdf` et `ha` ne se connaissent pas ; seul `cli` les assemble.
+- `grdf` et `ha` ne se connaissent pas ; ils partagent seulement les modules neutres (`url`, `secret`, `domain`, `ports`, `error`, `log`) ; seul `app` les assemble.
 - Seul `grdf/http.rs` importe `ureq`.
 
 **Arrêt du conteneur.** Pas de gestion des signaux : impossible en bibliothèque standard sans `unsafe`, et inutile, car chaque import est une seule commande WebSocket, donc un arrêt brutal ne laisse rien à moitié écrit. Comme le binaire est PID 1 dans une image `scratch`, le compose met `init: true` pour que `docker stop` soit immédiat.

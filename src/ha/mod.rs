@@ -15,8 +15,8 @@
 //! Ne connaît pas `grdf`. Convertit les jours en minuit dans le fuseau de
 //! Home Assistant, lu à la connexion (et inversement).
 //!
-//! Dépendances : `domain`, `ports`, `secret`, `error`, `log`, `serde_json`,
-//! `jiff`.
+//! Dépendances : `domain`, `ports`, `url`, `secret`, `error`, `log`,
+//! `serde_json`, `jiff`.
 
 pub(crate) mod server;
 pub(crate) mod session;

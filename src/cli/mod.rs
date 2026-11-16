@@ -24,7 +24,8 @@
 //! Assistant injoignable ou en refus), 2 configuration ou ligne de commande
 //! incorrecte, ou `reset` sans `--yes`.
 //!
-//! Dépendances : `app`, `daemon`, `config`, `sync` (types), `log`, `error`.
+//! Dépendances : `app`, `daemon`, `config`, `domain`, `sync` (types), `log`,
+//! `error`, `jiff`.
 
 pub(crate) mod args;
 pub(crate) mod report;
