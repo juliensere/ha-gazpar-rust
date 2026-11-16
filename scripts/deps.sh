@@ -9,6 +9,8 @@
 # pour la cible des images, sans compter ha-gazpar-rust lui-même : les
 # dépendances de compilation (cc…) et de test sont exclues.
 set -euo pipefail
+# Sortie sans couleur, quelle que soit CARGO_TERM_COLOR (la CI la force à always).
+export CARGO_TERM_COLOR=never
 cd "$(dirname "$0")/.."
 
 target=${CRATES_TARGET:-aarch64-unknown-linux-musl}
@@ -18,7 +20,7 @@ begin='<!-- DÉBUT : bloc généré par `make deps`, ne pas modifier à la main 
 end='<!-- FIN du bloc généré -->'
 
 crate_list() {
-    cargo tree --locked -e normal --prefix none --target "$target" \
+    cargo tree --locked --color never -e normal --prefix none --target "$target" \
         | sed 's/ (\*)$//' | grep -v '^ha-gazpar-rust ' | sort -u
 }
 
@@ -35,7 +37,7 @@ block() {
     echo "- Plafond (\`MAX_CRATES\` du Makefile) : **$max**"
     echo
     echo '```text'
-    cargo tree --locked -e normal --target "$target" | sed 's/^ha-gazpar-rust \(v[^ ]*\) (.*)$/ha-gazpar-rust \1/'
+    cargo tree --locked --color never -e normal --target "$target" | sed 's/^ha-gazpar-rust \(v[^ ]*\) (.*)$/ha-gazpar-rust \1/'
     echo '```'
     echo
     echo "$end"
