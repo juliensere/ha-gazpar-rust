@@ -205,8 +205,10 @@ pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) ->
     best.map(|(_, c)| c)
 }
 
+/// Majuscules, `-` changé en `_`, sans le `--` d'un paramètre.
 fn normalize(s: &str) -> String {
-    s.chars()
+    s.trim_start_matches('-')
+        .chars()
         .map(|c| {
             if c == '-' {
                 '_'
@@ -573,6 +575,10 @@ mod tests {
         let names = ["GRDF_PCE", "GRDF_PASSWORD", "GAZPAR_OVERLAP_DAYS"];
         assert_eq!(closest("GRDF_PCF", names), Some("GRDF_PCE"));
         assert_eq!(closest("grdf-pce", names), Some("GRDF_PCE"));
+        assert_eq!(
+            closest("--overlap-days", names),
+            Some("GAZPAR_OVERLAP_DAYS")
+        );
         assert_eq!(
             closest("GAZPAR_OVERLAP", names),
             Some("GAZPAR_OVERLAP_DAYS")
