@@ -1,0 +1,15 @@
+# Contexte de construction de l'image : seuls Cargo.toml, Cargo.lock et src/
+# sont copiés, mais tout le contexte est envoyé au démon. On exclut donc ce
+# qui est gros (target/) ou secret (.env).
+.git
+.github
+.idea
+.vscode
+.env
+.env.*
+!.env.example
+target
+coverage
+dist
+*.profraw
+.playwright-cli
