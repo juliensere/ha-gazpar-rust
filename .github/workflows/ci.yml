@@ -3,9 +3,6 @@
 # Actions tierces épinglées par SHA de commit (version en commentaire),
 # SHA résolus avec `git ls-remote --tags` le 2026-11-16.
 #
-# TODO (étape 2) : job contre le conteneur Home Assistant de référence
-#   (HA_VERSION du Makefile), et, en exécution planifiée, contre
-#   home-assistant:stable ; un échec planifié ouvrira un ticket.
 # TODO (étape 6) : compilation statique arm64, plafond de taille du binaire,
 #   et workflow release.yml (tag vAAAA.M.N, image multi-architecture).
 
@@ -105,3 +102,106 @@ jobs:
         with:
           arguments: --locked
           command: check advisories
+
+  # Essai réel contre la version de référence (HA_VERSION du Makefile).
+  ha:
+    name: Home Assistant de référence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Chaîne de compilation de rust-toolchain.toml
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+          rustc --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ha
+
+      # Démarre HA (utilisateur et jeton créés par onboarding), puis les essais.
+      - run: make test-ha
+
+      - name: Version de Home Assistant
+        if: always()
+        run: |
+          v=$(cut -d' ' -f1 target/ha-test/version 2>/dev/null || echo "inconnue")
+          echo "**Home Assistant (référence)** : $v" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Arrêt de Home Assistant
+        if: always()
+        run: make ha-down
+
+      - name: Journal de Home Assistant
+        if: failure()
+        run: tail -n 200 target/ha-test.log || true
+
+  # Même essai contre home-assistant:stable, en exécution planifiée : un
+  # échec ouvre un ticket, l'alerte « une nouvelle version de HA casse
+  # l'import » (PLAN.md §9, §10.1).
+  ha-stable:
+    name: Home Assistant stable (planifié)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    env:
+      HA_TAG: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Chaîne de compilation de rust-toolchain.toml
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+          rustc --version
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ha
+
+      # Démarre HA (utilisateur et jeton créés par onboarding), puis les essais.
+      - run: make test-ha HA_TAG="$HA_TAG"
+
+      - name: Version de Home Assistant
+        if: always()
+        run: |
+          v=$(cut -d' ' -f1 target/ha-test/version 2>/dev/null || echo "inconnue")
+          # Gardée pour le ticket : make ha-down efface target/ha-test.
+          echo "HA_RUN_VERSION=$v" >> "$GITHUB_ENV"
+          echo "**Home Assistant $HA_TAG** : $v" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Arrêt de Home Assistant
+        if: always()
+        run: make ha-down
+
+      - name: Journal de Home Assistant
+        if: failure()
+        run: tail -n 200 target/ha-test.log || true
+
+      - name: Ticket si HA stable casse l'import
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Home Assistant stable casse l'essai d'import"
+          # Comparaison exacte des titres : la recherche de gh est approximative.
+          if gh issue list --state open --limit 500 --json title --jq '.[].title' | grep -Fxq "$title"; then
+            echo "ticket déjà ouvert : $title"
+            exit 0
+          fi
+          gh issue create --title "$title" --body-file - <<BODY
+          L'essai planifié \`make test-ha HA_TAG=stable\` a échoué contre Home Assistant ${HA_RUN_VERSION:-inconnue} : $RUN_URL
+
+          Une nouvelle version de HA a pu changer le schéma de \`recorder/import_statistics\` ou la lecture des statistiques (PLAN.md §10.1, §12).
+          BODY

@@ -5,6 +5,14 @@
 # Cargo.toml (vérifié par `make version-check`).
 HA_VERSION ?= 2026.9
 
+# Home Assistant jetable (`make ha-up`, `make test-ha`). L'étiquette `2026.9`
+# de l'image suit les correctifs de la lignée (2026.9.4 le 2026-11-16) ; la CI
+# planifiée passe HA_TAG=stable.
+HA_TAG ?= $(HA_VERSION)
+HA_IMAGE := ghcr.io/home-assistant/home-assistant:$(HA_TAG)
+HA_PORT := 8124
+HA_TEST_DIR := target/ha-test
+
 # Plafond du nombre de crates de l'arbre d'exécution, hors ha-gazpar-rust
 # (PLAN.md §4.3). Mesuré à 29 le 2026-11-16 pour aarch64-unknown-linux-musl,
 # plus 3 de marge. Le relever exige une justification dans DEPENDENCIES.md.
@@ -17,7 +25,7 @@ COVER_MIN ?= 90
 CARGO ?= cargo
 SHELL := bash
 .SHELLFLAGS := -eu -o pipefail -c
-export MAX_CRATES CRATES_TARGET
+export MAX_CRATES CRATES_TARGET HA_IMAGE HA_PORT HA_TEST_DIR
 
 .DEFAULT_GOAL := help
 .PHONY: help check fmt fmt-check lint test deny crates deps deps-check version-check \
@@ -85,14 +93,17 @@ release: ## Compilation optimisée, affiche la taille du binaire
 	$(CARGO) build --release --locked
 	@echo "target/release/ha-gazpar : $$(stat -c %s target/release/ha-gazpar) octets"
 
-ha-up: ## Home Assistant jetable en conteneur (itération ultérieure)
-	@echo "make $@ : itération ultérieure (étape 2, HA $(HA_VERSION))"
+ha-up: ## Home Assistant jetable sur 127.0.0.1:8124 (utilisateur et jeton de test)
+	@scripts/ha-test.sh up
 
-ha-down: ## Arrête le Home Assistant jetable (itération ultérieure)
-	@echo "make $@ : itération ultérieure (étape 2)"
+ha-down: ## Arrête et supprime le Home Assistant jetable
+	@scripts/ha-test.sh down
 
-test-ha: ## Essais contre le Home Assistant jetable (itération ultérieure)
-	@echo "make $@ : itération ultérieure (étape 2, HA $(HA_VERSION))"
+test-ha: ha-up ## Essais réels contre le Home Assistant jetable
+	HA_TEST_URL=ws://127.0.0.1:$(HA_PORT)/api/websocket \
+	HA_TEST_TOKEN_FILE=$(HA_TEST_DIR)/token \
+	HA_TEST_TAG=$(HA_TAG) \
+	$(CARGO) test --locked --test ha_real -- --ignored --test-threads=1
 
 dev: ## Chaîne complète contre faux GRDF et HA jetable (itération ultérieure)
 	@echo "make $@ : itération ultérieure (étapes 2 à 5)"
