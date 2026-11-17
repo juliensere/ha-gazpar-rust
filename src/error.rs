@@ -6,9 +6,30 @@
 //! [`crate::secret::Secret`], qui s'affichent `***` même si on les formate
 //! par erreur.
 //!
+//! **Contexte.** Une erreur remonte en se replaçant dans l'opération qui l'a
+//! produite ([`Error::context`]) : chaque couche ajoute ce qu'elle seule sait
+//! (l'étape de connexion, la fenêtre de dates, la statistique…) devant le
+//! message, sans changer de variante, donc sans changer la classification
+//! ([`Error::is_transient`]) ni le code de sortie ([`Error::exit_code`]). Le
+//! contexte est une valeur typée de l'appelant (une étape, une opération) qui
+//! s'affiche en français. Une ligne d'erreur complète se lit ainsi :
+//!
+//! ```text
+//! <service>, <opération> : <cause, avec l'hôte et le port> ; <que faire>
+//! ```
+//!
+//! Exemple : « GRDF, connexion 3/5 (identification Okta) : pas de réponse de
+//! connexion.grdf.fr:443 en 60 s ». Jamais d'adresse complète : l'hôte et le
+//! port seulement, le chemin et la requête pouvant porter un jeton.
+//!
+//! [`io_cause`] traduit une erreur d'entrée-sortie en français, pour `grdf`
+//! comme pour `ha`, qui partagent ainsi le même vocabulaire sans se
+//! connaître.
+//!
 //! Dépendances : aucune (bibliothèque standard).
 
 use std::fmt;
+use std::io;
 
 /// Erreur du programme.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +107,56 @@ impl Error {
             Error::Config(_) | Error::Usage(_) => false,
         }
     }
+
+    /// Replace l'erreur dans l'opération qui l'a produite : le message
+    /// devient « `context` : message ». Même variante, donc même
+    /// classification et même code de sortie. Sans effet sur
+    /// [`Error::Config`], qui est une liste de problèmes.
+    pub fn context(self, context: impl fmt::Display) -> Error {
+        self.map_message(|m| format!("{context} : {m}"))
+    }
+
+    /// Transforme le message, dans la même variante (sans effet sur
+    /// [`Error::Config`]). Base de [`Error::context`] ; sert aussi à
+    /// compléter une cause (« abandon après 4 tentatives »).
+    pub fn map_message(self, f: impl FnOnce(String) -> String) -> Error {
+        match self {
+            Error::Config(problems) => Error::Config(problems),
+            Error::Usage(m) => Error::Usage(f(m)),
+            Error::Io(m) => Error::Io(f(m)),
+            Error::Http(m) => Error::Http(f(m)),
+            Error::GrdfLogin(m) => Error::GrdfLogin(f(m)),
+            Error::GrdfCredentialsRejected(m) => Error::GrdfCredentialsRejected(f(m)),
+            Error::Grdf(m) => Error::Grdf(f(m)),
+            Error::HomeAssistant(m) => Error::HomeAssistant(f(m)),
+            Error::Protocol(m) => Error::Protocol(f(m)),
+            Error::Invalid(m) => Error::Invalid(f(m)),
+        }
+    }
+}
+
+/// Cause d'une erreur d'entrée-sortie, en français : « connexion refusée »,
+/// « délai dépassé »… Le texte du système (souvent en anglais) n'est repris
+/// que pour un type d'erreur sans traduction (échec de résolution DNS, par
+/// exemple). Le délai lui-même est ajouté par l'appelant, qui le connaît.
+pub fn io_cause(e: &io::Error) -> String {
+    use io::ErrorKind::*;
+    let known = match e.kind() {
+        ConnectionRefused => "connexion refusée",
+        ConnectionReset => "connexion réinitialisée par le pair",
+        ConnectionAborted => "connexion interrompue",
+        BrokenPipe => "connexion coupée",
+        UnexpectedEof => "connexion fermée avant la fin de l'échange",
+        TimedOut | WouldBlock => "délai dépassé",
+        HostUnreachable => "hôte injoignable",
+        NetworkUnreachable => "réseau injoignable",
+        NetworkDown => "réseau indisponible",
+        AddrNotAvailable => "adresse indisponible",
+        NotConnected => "connexion non établie",
+        PermissionDenied => "permission refusée",
+        _ => return format!("erreur d'entrée-sortie ({e})"),
+    };
+    known.to_owned()
 }
 
 impl fmt::Display for Error {
@@ -117,9 +188,9 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::Io(e.to_string())
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Error::Io(io_cause(&e))
     }
 }
 
@@ -190,8 +261,93 @@ mod tests {
 
     #[test]
     fn from_io_error() {
-        let io = std::io::Error::new(std::io::ErrorKind::NotFound, "absent");
-        assert_eq!(Error::from(io), Error::Io("absent".into()));
+        let io = io::Error::from(io::ErrorKind::ConnectionRefused);
+        assert_eq!(Error::from(io), Error::Io("connexion refusée".into()));
+    }
+
+    #[test]
+    fn io_causes_are_french() {
+        use io::ErrorKind::*;
+        for (kind, cause) in [
+            (ConnectionRefused, "connexion refusée"),
+            (TimedOut, "délai dépassé"),
+            (WouldBlock, "délai dépassé"),
+            (ConnectionReset, "connexion réinitialisée par le pair"),
+            (UnexpectedEof, "connexion fermée avant la fin de l'échange"),
+            (HostUnreachable, "hôte injoignable"),
+        ] {
+            assert_eq!(io_cause(&io::Error::from(kind)), cause, "{kind:?}");
+        }
+        // Sans traduction : le texte du système, entre parenthèses.
+        let dns = io::Error::other("failed to lookup address information");
+        assert_eq!(
+            io_cause(&dns),
+            "erreur d'entrée-sortie (failed to lookup address information)"
+        );
+    }
+
+    #[test]
+    fn context_prefixes_the_message_and_keeps_the_variant() {
+        let e = Error::Http("pas de réponse de connexion.grdf.fr:443 en 60 s".into())
+            .context("GRDF, connexion 3/5 (identification Okta)");
+        assert_eq!(
+            e,
+            Error::Http(
+                "GRDF, connexion 3/5 (identification Okta) : pas de réponse de \
+                 connexion.grdf.fr:443 en 60 s"
+                    .into()
+            )
+        );
+        assert!(e.is_transient());
+
+        // Un refus d'identifiants reste un refus : le démon cesse alors de
+        // se connecter à GRDF.
+        let rejected = Error::GrdfCredentialsRejected("identifiants refusés".into())
+            .context("GRDF, connexion 4/5 (mot de passe Okta)");
+        assert!(matches!(&rejected, Error::GrdfCredentialsRejected(m)
+            if m == "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés"));
+        assert!(!rejected.is_transient());
+        assert_eq!(rejected.exit_code(), 1);
+
+        // Contexte typé de l'appelant : n'importe quel Display.
+        struct Window(&'static str, &'static str);
+        impl fmt::Display for Window {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "relevés du {} au {}", self.0, self.1)
+            }
+        }
+        let e = Error::Grdf("statut HTTP 500".into()).context(Window("2026-01-01", "2026-01-31"));
+        assert_eq!(
+            e,
+            Error::Grdf("relevés du 2026-01-01 au 2026-01-31 : statut HTTP 500".into())
+        );
+
+        // Une configuration invalide reste la liste de ses problèmes.
+        let config = Error::Config(vec!["A manquant".into()]).context("x");
+        assert_eq!(config, Error::Config(vec!["A manquant".into()]));
+        assert_eq!(config.exit_code(), 2);
+    }
+
+    #[test]
+    fn map_message_completes_the_cause() {
+        let e = Error::Io("délai dépassé".into())
+            .map_message(|m| format!("{m} ; abandon après 4 tentatives"));
+        assert_eq!(
+            e,
+            Error::Io("délai dépassé ; abandon après 4 tentatives".into())
+        );
+        for e in [
+            Error::Usage("u".into()),
+            Error::GrdfLogin("u".into()),
+            Error::Grdf("u".into()),
+            Error::HomeAssistant("u".into()),
+            Error::Protocol("u".into()),
+            Error::Invalid("u".into()),
+        ] {
+            let before = std::mem::discriminant(&e);
+            let after = e.map_message(|m| m + "!");
+            assert_eq!(std::mem::discriminant(&after), before);
+        }
     }
 
     #[test]
