@@ -3,6 +3,8 @@
 # release-check`) comme dans .github/workflows/release.yml.
 #
 #   scripts/release-check.sh check vAAAA.M.N   échoue si le tag ne concorde pas
+#                                              (préversion : vAAAA.M.N-alpha.K,
+#                                              -beta.K ou -rc.K)
 #                                              avec Cargo.toml, HA_VERSION du
 #                                              Makefile et CHANGELOG.md
 #   scripts/release-check.sh notes AAAA.M.N    affiche la section de cette
@@ -41,13 +43,14 @@ section() {
 check() {
     local tag=$1 errors=()
     local version=${tag#v}
-    local re='^[0-9]{4}\.(1[0-2]|[1-9])\.(0|[1-9][0-9]*)$'
+    local re='^[0-9]{4}\.(1[0-2]|[1-9])\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.[1-9][0-9]*)?$'
 
     if [[ $tag != v* || ! $version =~ $re ]]; then
-        echo "ERREUR : tag « $tag » : attendu vAAAA.M.N (ex. v2026.9.0, mois sans zéro initial)" >&2
+        echo "ERREUR : tag « $tag » : attendu vAAAA.M.N ou vAAAA.M.N-alpha.K, -beta.K, -rc.K (ex. v2026.9.0, v2026.9.0-alpha.1, mois sans zéro initial)" >&2
         exit 1
     fi
-    local lineage=${version%.*}
+    local base=${version%%-*}
+    local lineage=${base%.*}
 
     local cargo
     cargo=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)

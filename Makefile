@@ -72,7 +72,7 @@ deps-check: ## Vérifie que DEPENDENCIES.md est à jour
 	@scripts/deps.sh verify
 
 version-check: ## Vérifie que HA_VERSION concorde avec la version de Cargo.toml
-	@v=$$(sed -n 's/^version = "\([0-9]*\.[0-9]*\)\.[0-9]*"$$/\1/p' Cargo.toml | head -n 1); \
+	@v=$$(sed -n 's/^version = "\([0-9]*\.[0-9]*\)\.[0-9]*\(-[0-9a-z.]*\)\{0,1\}"$$/\1/p' Cargo.toml | head -n 1); \
 	if [ "$$v" != "$(HA_VERSION)" ]; then \
 		echo "ERREUR : Cargo.toml est en $$v.N mais HA_VERSION vaut $(HA_VERSION) (PLAN.md §10.1)" >&2; exit 1; \
 	fi; \
@@ -146,5 +146,5 @@ dist: ## Binaires statiques amd64 et arm64 dans dist/, avec SHA256SUMS
 
 # Hors de `make check` : échoue tant que CHANGELOG.md n'a pas de section
 # datée pour la version de Cargo.toml.
-release-check: ## Concordance tag, Cargo.toml, HA_VERSION et CHANGELOG.md (TAG=vAAAA.M.N)
+release-check: ## Concordance tag, Cargo.toml, HA_VERSION et CHANGELOG.md (TAG=vAAAA.M.N[-alpha.K])
 	@scripts/release-check.sh check $(if $(TAG),$(TAG),v$(VERSION))

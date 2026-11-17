@@ -1,4 +1,7 @@
-# Publication d'une version (PLAN.md §9, §10), à la pose d'un tag vAAAA.M.N.
+# Publication d'une version (PLAN.md §9, §10), à la pose d'un tag vAAAA.M.N,
+# ou d'une préversion, tag vAAAA.M.N-alpha.K (-beta.K, -rc.K) : image
+# étiquetée seulement AAAA.M.N-alpha.K (ni AAAA.M ni latest), version GitHub
+# marquée « pre-release ».
 #
 # Procédure : dans CHANGELOG.md, renommer « Non publié » en
 # « ## [AAAA.M.N] - AAAA-MM-JJ » (et rouvrir une section « Non publié » vide),
@@ -89,7 +92,8 @@ jobs:
         id: meta
         run: |
           version=${GITHUB_REF_NAME#v}
-          lineage=${version%.*}
+          base=${version%%-*}
+          lineage=${base%.*}
           newest() { git tag -l "$1" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1; }
           tags="$IMAGE:$version"
           if [[ $(newest "v$lineage.*") == "$GITHUB_REF_NAME" ]]; then tags+=" $IMAGE:$lineage"; fi
@@ -167,5 +171,7 @@ jobs:
           Image \`$IMAGE:$VERSION\` (linux/amd64, linux/arm64), condensé \`$DIGEST\`.
           Binaires statiques ci-dessous, sommes dans \`SHA256SUMS\` (\`sha256sum -c SHA256SUMS --ignore-missing\`) ; provenance : \`gh attestation verify <fichier> --repo $GH_REPO\`.
           EOF
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$VERSION" \
+          pre=()
+          if [[ $VERSION == *-* ]]; then pre=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$VERSION" "${pre[@]}" \
             --notes-file "$notes" dist/ha-gazpar-* dist/SHA256SUMS

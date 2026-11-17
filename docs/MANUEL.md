@@ -359,6 +359,7 @@ Les versions sont numérotées `AAAA.M.N` : `AAAA.M` est la version de Home Assi
 
 - Une version reste valable avec les versions suivantes de Home Assistant tant que rien ne casse ; chaque semaine, l'intégration continue la teste contre la dernière version stable de Home Assistant.
 - Étiquettes de l'image : `2026.9.1` (figée), `2026.9` (dernière publication de cette lignée), `latest`.
+- Les préversions (`2026.9.0-alpha.1`, `-beta.K`, `-rc.K`) n'ont que leur étiquette exacte : elles ne remplacent jamais `2026.9` ni `latest`.
 - Les nouveautés et corrections de chaque version sont dans [CHANGELOG.md](../CHANGELOG.md) et sur la page des versions GitHub.
 - Si une option est renommée ou retirée, l'ancien nom reste accepté avec un avertissement pendant au moins une lignée de versions.
 

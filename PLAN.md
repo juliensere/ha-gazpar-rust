@@ -265,6 +265,8 @@ Exemple : `2026.9.0` puis `2026.9.1` (correctif), puis `2026.12.0` quand la réf
 
 Étiquettes de l'image : `2026.9.1` (figée), `2026.9` (dernière de la lignée), `latest`.
 
+Préversions : `2026.9.0-alpha.1` (puis `-beta.K`, `-rc.K`), numéro valide pour Cargo et SemVer. Image étiquetée seulement avec la version exacte, version GitHub marquée « pre-release ».
+
 **On ne publie pas à chaque version mensuelle de HA.** Une version reste valable tant que l'essai hebdomadaire contre `home-assistant:stable` passe. La référence n'avance que lorsqu'une publication est de toute façon nécessaire (correctif de sécurité, changement de GRDF, changement du schéma d'import de HA). La version de référence est écrite à un seul endroit, `HA_VERSION` dans le `Makefile`, lu par la CI.
 
 Le programme affiche au démarrage sa version et la version de HA à laquelle il est connecté, et avertit si HA est plus ancien que sa référence.
