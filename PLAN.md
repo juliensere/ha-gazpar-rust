@@ -241,7 +241,7 @@ Deux workflows GitHub Actions.
 **`ci.yml`** — à chaque push et pull request, plus une exécution planifiée hebdomadaire :
 
 1. `make check` (format, lint, tests, `cargo deny`, plafond de crates), puis `make cover` (seuil de couverture) dans un job séparé ;
-2. compilation statique arm64 et amd64, taille du binaire affichée et comparée à un plafond ;
+2. compilation statique arm64 et amd64, taille du binaire affichée et comparée à un plafond ; l'image est compilée par `cargo-auditable` (liste des crates dans le binaire, pour Trivy ou `cargo audit bin`) et la CI vérifie la section `.dep-v0` ;
 3. essai contre le conteneur Home Assistant de la version de référence (voir §10) ;
 4. exécution planifiée seulement : avis de sécurité, et essai contre `home-assistant:stable`. Un échec ouvre un ticket : c'est l'alerte « une nouvelle version de HA casse l'import » ou « une faille touche une dépendance ».
 

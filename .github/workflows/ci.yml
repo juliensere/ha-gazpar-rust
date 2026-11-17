@@ -170,6 +170,16 @@ jobs:
           env=$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$img" | grep -E '^(GAZPAR|GRDF|HA)_' || true)
           [ -z "$env" ] || { echo "variables de configuration dans l'image : $env" >&2; exit 1; }
 
+      # cargo auditable : liste des crates gravée dans le binaire, lisible
+      # par Trivy, Grype ou `cargo audit bin`.
+      - name: Binaire auditable
+        run: |
+          cid=$(docker create ha-gazpar-rust:dev)
+          docker cp "$cid:/ha-gazpar" "$RUNNER_TEMP/ha-gazpar"
+          docker rm "$cid"
+          readelf -S "$RUNNER_TEMP/ha-gazpar" | grep -F .dep-v0 ||
+            { echo "section .dep-v0 absente : binaire non compilé par cargo auditable" >&2; exit 1; }
+
   advisories:
     name: Avis de sécurité (planifié)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

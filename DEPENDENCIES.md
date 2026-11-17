@@ -32,6 +32,8 @@ Aucun : chaque crate n'apparaît qu'en une version (`multiple-versions = "deny"`
 
 `ring` compile du C et de l'assembleur avec `cc` (qui tire `shlex` et `find-msvc-tools`). Ce ne sont pas des dépendances d'exécution et elles ne sont pas comptées dans le plafond ; `cargo deny` les vérifie tout de même.
 
+L'image et les binaires publiés sont compilés par [`cargo-auditable`](https://github.com/rust-secure-code/cargo-auditable) (version épinglée dans le `Dockerfile`), un outil de compilation installé dans l'étape de construction de l'image, pas une dépendance du programme. Il grave dans le binaire, dans une section `.dep-v0` d'environ 600 octets, la liste des crates ci-dessous avec leurs versions. Trivy, Grype ou `cargo audit bin` peuvent ainsi analyser l'image `FROM scratch` ou un binaire téléchargé sans le dépôt ; sans elle, une image qui ne contient que le binaire n'est pas analysable. La CI et la publication vérifient la présence de cette section.
+
 ## Arbre d'exécution
 
 <!-- DÉBUT : bloc généré par `make deps`, ne pas modifier à la main -->

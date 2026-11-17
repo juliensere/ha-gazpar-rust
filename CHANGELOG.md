@@ -8,6 +8,10 @@ Chaque version publiée a une section dont l'en-tête est exactement `## [AAAA.M
 
 ## Non publié
 
+### Nouveautés
+
+- Image et binaires publiés auditables : compilés par `cargo-auditable`, ils contiennent la liste des crates et de leurs versions (section `.dep-v0`, environ 600 octets). `trivy image ghcr.io/juliensere/ha-gazpar-rust:<version>` ou `cargo audit bin ha-gazpar` analysent ainsi les dépendances de l'image `FROM scratch`, qui n'avait rien d'analysable. Présence vérifiée par la CI et la publication.
+
 ## [2026.9.0-alpha.1] - 2026-11-17
 
 Préversion, validée avec Home Assistant 2026.9 et testée contre de faux serveurs GRDF, mais pas encore essayée sur un vrai compte GRDF. Image `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.1` (ni `2026.9` ni `latest`). Lancez `ha-gazpar check` avant `run`.

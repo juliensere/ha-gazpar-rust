@@ -29,6 +29,17 @@ FROM rust:1.99.1-alpine3.24@sha256:44819b27be4c97b0e4d7203bd2e02c4820f97700211b6
 
 WORKDIR /src
 
+# cargo-auditable grave dans le binaire (section `.dep-v0`) la liste des crates
+# compilées, avec leurs versions : Trivy, Grype ou `cargo audit bin` peuvent
+# ainsi analyser l'image et les binaires publiés, qui ne contiennent rien
+# d'autre. Outil de compilation seulement, aucune dépendance de plus dans le
+# programme. Couche à part, avant les sources : réutilisée tant que la version
+# ne change pas.
+ARG CARGO_AUDITABLE_VERSION=0.7.7
+RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    cargo install cargo-auditable --version "${CARGO_AUDITABLE_VERSION}" --locked \
+    && cargo auditable --version
+
 # rust-toolchain.toml n'est pas copié : rustup tenterait d'installer la
 # chaîne qu'il nomme alors que l'image fournit déjà Rust 1.99.
 COPY Cargo.toml Cargo.lock ./
@@ -40,7 +51,7 @@ COPY src ./src
 ARG TARGETARCH
 RUN --mount=type=cache,id=cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=ha-gazpar-target-${TARGETARCH},target=/src/target \
-    cargo build --release --locked \
+    cargo auditable build --release --locked \
     && cp target/release/ha-gazpar /ha-gazpar
 
 # Étape intermédiaire pour extraire le binaire seul :
