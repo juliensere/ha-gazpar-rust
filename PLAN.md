@@ -333,7 +333,7 @@ Conséquences pour ce projet :
 
 ### Fait
 
-- Étapes 1 à 3 et 5 terminées. Étape 4 terminée contre le faux GRDF seulement. Étape 6 : préversion `2026.9.0-alpha.1` publiée (version GitHub « pre-release », image `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.1`, publique, amd64 et arm64), sans déploiement réel.
+- Étapes 1 à 3 et 5 terminées. Étape 4 terminée contre le faux GRDF seulement. Étape 6 : préversions `2026.9.0-alpha.1` puis `2026.9.0-alpha.2` publiées (versions GitHub « pre-release », image `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.2`, publique, amd64 et arm64, auditable par Trivy), sans déploiement réel.
 - CI verte sur GitHub ; `make test-ha` vert contre HA 2026.9.4 et 2026.11.1.
 - Journaux retravaillés : chaque erreur nomme l'étape, la cible (hôte:port), la cause et le conseil ; niveau `debug` de diagnostic de la connexion GRDF, sans secret (manuel §7).
 

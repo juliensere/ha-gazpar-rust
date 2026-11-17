@@ -4,7 +4,7 @@ Importe la consommation de gaz d'un compteur Gazpar (GRDF) dans les statistiques
 
 C'est un petit programme autonome écrit en Rust, à faire tourner en conteneur à côté de Home Assistant : un seul binaire statique, trois dépendances directes, aucune télémétrie.
 
-> **État : préversion `2026.9.0-alpha.1`.** Le programme est complet et testé contre de faux serveurs GRDF et Home Assistant, et contre un vrai Home Assistant en conteneur ; il n'a pas encore été essayé sur un vrai compte GRDF. Image : `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.1`.
+> **État : préversion `2026.9.0-alpha.2`.** Le programme est complet et testé contre de faux serveurs GRDF et Home Assistant, et contre un vrai Home Assistant en conteneur ; il n'a pas encore été essayé sur un vrai compte GRDF. Image : `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.2`.
 
 ## Démarrage rapide
 

@@ -49,7 +49,7 @@ dependencies = [
 
 [[package]]
 name = "ha-gazpar-rust"
-version = "2026.9.0-alpha.1"
+version = "2026.9.0-alpha.2"
 dependencies = [
  "jiff",
  "serde_json",

@@ -8,6 +8,10 @@ Chaque version publiée a une section dont l'en-tête est exactement `## [AAAA.M
 
 ## Non publié
 
+## [2026.9.0-alpha.2] - 2026-11-17
+
+Préversion : image et binaires auditables, sinon identique à 2026.9.0-alpha.1. Image `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.2` (ni `2026.9` ni `latest`).
+
 ### Nouveautés
 
 - Image et binaires publiés auditables : compilés par `cargo-auditable`, ils contiennent la liste des crates et de leurs versions (section `.dep-v0`, environ 600 octets). `trivy image ghcr.io/juliensere/ha-gazpar-rust:<version>` ou `cargo audit bin ha-gazpar` analysent ainsi les dépendances de l'image `FROM scratch`, qui n'avait rien d'analysable. Présence vérifiée par la CI et la publication.

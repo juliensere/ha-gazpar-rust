@@ -78,7 +78,7 @@ Ajoutez le service :
 ```yaml
 services:
   ha-gazpar:
-    image: ghcr.io/juliensere/ha-gazpar-rust:2026.9   # dernière version validée avec HA 2026.9 (préversion : 2026.9.0-alpha.1)
+    image: ghcr.io/juliensere/ha-gazpar-rust:2026.9   # dernière version validée avec HA 2026.9 (préversion : 2026.9.0-alpha.2)
     container_name: ha-gazpar
     restart: unless-stopped
     init: true               # arrêt immédiat avec docker stop

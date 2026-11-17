@@ -44,7 +44,7 @@ Cible : `aarch64-unknown-linux-musl`, dépendances d'exécution uniquement (`car
 - Plafond (`MAX_CRATES` du Makefile) : **32**
 
 ```text
-ha-gazpar-rust v2026.9.0-alpha.1
+ha-gazpar-rust v2026.9.0-alpha.2
 ├── jiff v1.0.0
 │   ├── jiff-core v1.0.0
 │   └── jiff-tzdb v1.0.0
