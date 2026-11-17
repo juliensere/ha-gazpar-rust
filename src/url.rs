@@ -213,6 +213,13 @@ impl Url {
         &self.path
     }
 
+    /// Hôte et port, toujours explicite (`monespace.grdf.fr:443`,
+    /// `192.168.0.10:8123`) : la cible nommée dans les messages d'erreur,
+    /// sans chemin ni requête.
+    pub fn host_port(&self) -> String {
+        format!("{}:{}", self.host, self.port_or_default())
+    }
+
     /// Hôte et port tels qu'attendus dans l'en-tête `Host` : le port est
     /// omis s'il est celui du schéma.
     pub fn authority(&self) -> String {
@@ -457,6 +464,25 @@ mod tests {
         assert_eq!(url("https://h:80/").authority(), "h:80");
         assert_eq!(url("http://h:8080/").authority(), "h:8080");
         assert_eq!(url("http://[::1]:8080/").authority(), "[::1]:8080");
+    }
+
+    #[test]
+    fn host_port_is_the_target_of_messages() {
+        assert_eq!(
+            url("https://connexion.grdf.fr/idp/idx/identify?stateToken=X").host_port(),
+            "connexion.grdf.fr:443"
+        );
+        assert_eq!(
+            url("http://127.0.0.1:40123/").host_port(),
+            "127.0.0.1:40123"
+        );
+        assert_eq!(
+            Url::ws("ws://ha.local:8123/api/websocket")
+                .unwrap()
+                .host_port(),
+            "ha.local:8123"
+        );
+        assert_eq!(url("http://[::1]/").host_port(), "[::1]:80");
     }
 
     #[test]

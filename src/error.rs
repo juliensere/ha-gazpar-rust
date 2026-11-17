@@ -42,8 +42,8 @@ pub enum Error {
     /// impossible le dit dès sa source (`ha::websocket::connect`) :
     /// « Home Assistant injoignable (…) ».
     Io(String),
-    /// Transport HTTP vers GRDF (connexion, TLS, délai). Le message nomme
-    /// GRDF dès sa source (`grdf::http`) : « GRDF injoignable (…) ».
+    /// Transport HTTP vers GRDF (connexion, TLS, délai) : la cause et l'hôte
+    /// visé (`grdf::http`), précédés de l'opération par le client GRDF.
     Http(String),
     /// Échec de la connexion à Mon Espace GRDF qui ne prouve pas un refus
     /// des identifiants (page inattendue, étape d'Okta absente, session
@@ -171,14 +171,14 @@ impl fmt::Display for Error {
             }
             Error::Usage(m) => write!(f, "usage incorrect : {m}"),
             Error::Io(m) => write!(f, "entrée-sortie : {m}"),
-            Error::Http(m) => write!(f, "HTTP : {m}"),
+            // Le message nomme déjà le service et l'opération (contexte).
+            Error::Http(m) | Error::Grdf(m) => f.write_str(m),
             Error::GrdfLogin(m) => write!(f, "échec de la connexion à GRDF : {m}"),
             Error::GrdfCredentialsRejected(m) => write!(
                 f,
                 "connexion à GRDF refusée : {m} ; vérifiez GRDF_USERNAME et GRDF_PASSWORD \
                  (identifiants de Mon Espace GRDF)"
             ),
-            Error::Grdf(m) => write!(f, "API GRDF : {m}"),
             Error::HomeAssistant(m) => write!(f, "Home Assistant : {m}"),
             Error::Protocol(m) => write!(f, "protocole : {m}"),
             Error::Invalid(m) => write!(f, "valeur invalide : {m}"),
@@ -235,7 +235,9 @@ mod tests {
 
     #[test]
     fn only_network_failures_are_transient() {
-        assert!(Error::Http("GRDF injoignable (délai dépassé)".into()).is_transient());
+        assert!(
+            Error::Http("pas de réponse en 60 s (connexion.grdf.fr:443)".into()).is_transient()
+        );
         assert!(Error::Io("Home Assistant injoignable (refusé)".into()).is_transient());
         for e in [
             Error::Config(vec![]),

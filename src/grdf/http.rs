@@ -33,7 +33,7 @@ use std::time::Duration;
 use jiff::Timestamp;
 
 use super::cookies::CookieJar;
-use crate::error::Error;
+use crate::error::{self, Error};
 use crate::url::Url;
 
 /// `User-Agent` envoyé, celui de PyGazpar.
@@ -346,7 +346,13 @@ impl HttpClient {
                     body: raw.body,
                 });
             };
-            url = url.resolve(location)?;
+            url = url.resolve(location).map_err(|e| {
+                Error::Protocol(format!(
+                    "redirection {} de {} vers une adresse invalide : {e}",
+                    raw.status,
+                    url.host_port()
+                ))
+            })?;
             if next != method || raw.status == 303 {
                 body = None;
                 headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));
@@ -354,7 +360,8 @@ impl HttpClient {
             method = next;
         }
         Err(Error::Protocol(format!(
-            "plus de {MAX_REDIRECTS} redirections, abandon"
+            "plus de {MAX_REDIRECTS} redirections, abandon (dernière vers {})",
+            url.host_port()
         )))
     }
 }
@@ -412,7 +419,7 @@ impl Transport for UreqTransport {
                 builder.send(request.body.as_deref().unwrap_or_default())
             }
         };
-        let mut response = result.map_err(transport_error)?;
+        let mut response = result.map_err(|e| transport_error(e, &request.url))?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -425,7 +432,7 @@ impl Transport for UreqTransport {
             .limit(self.max_body)
             .lossy_utf8(true)
             .read_to_string()
-            .map_err(transport_error)?;
+            .map_err(|e| transport_error(e, &request.url))?;
         Ok(RawResponse {
             status,
             headers,
@@ -434,18 +441,34 @@ impl Transport for UreqTransport {
     }
 }
 
-/// Erreur `ureq` en message français qui nomme GRDF (« GRDF injoignable
-/// (délai dépassé) »), sans adresse ni en-tête : certaines variantes
-/// d'`ureq` recopient l'adresse ou un en-tête reçu. Ce client ne parle qu'à
-/// GRDF, le contexte est donc donné ici, à la source.
-fn transport_error(e: ureq::Error) -> Error {
-    let message = match e {
-        ureq::Error::Timeout(_) => "délai dépassé".to_owned(),
-        ureq::Error::HostNotFound => "hôte introuvable".to_owned(),
+/// Erreur `ureq` en cause française suivie de l'hôte et du port visés
+/// (« pas de réponse en 60 s (connexion.grdf.fr:443) »), jamais de
+/// l'adresse complète ni d'un en-tête : certaines variantes d'`ureq`
+/// recopient l'adresse ou un en-tête reçu. L'appelant ajoute l'opération
+/// (« GRDF, connexion 3/5 (identification Okta) »).
+fn transport_error(e: ureq::Error, url: &Url) -> Error {
+    let secs = |d: Duration| d.as_secs();
+    let cause = match e {
+        ureq::Error::Timeout(timeout) => match timeout {
+            ureq::Timeout::Resolve => {
+                format!(
+                    "délai de résolution DNS de {} s dépassé",
+                    secs(CONNECT_TIMEOUT)
+                )
+            }
+            ureq::Timeout::Connect => {
+                format!("délai de connexion de {} s dépassé", secs(CONNECT_TIMEOUT))
+            }
+            ureq::Timeout::PerRead | ureq::Timeout::RecvResponse | ureq::Timeout::RecvBody => {
+                format!("pas de réponse en {} s", secs(READ_TIMEOUT))
+            }
+            _ => "délai dépassé".to_owned(),
+        },
+        ureq::Error::HostNotFound => "hôte introuvable par le DNS".to_owned(),
         ureq::Error::ConnectionFailed => "connexion impossible".to_owned(),
-        ureq::Error::Io(io) => format!("entrée-sortie : {}", io.kind()),
+        ureq::Error::Io(io) => error::io_cause(&io),
         ureq::Error::BodyExceedsLimit(n) => {
-            format!("réponse trop volumineuse (plus de {n} octets)")
+            format!("réponse trop volumineuse, plus de {n} octets")
         }
         ureq::Error::BadUri(_) => "adresse refusée par le client HTTP".to_owned(),
         ureq::Error::Protocol(_) | ureq::Error::BodyStalled => "réponse HTTP invalide".to_owned(),
@@ -453,7 +476,7 @@ fn transport_error(e: ureq::Error) -> Error {
         ureq::Error::Rustls(e) => format!("TLS : {e}"),
         _ => "échec de la requête".to_owned(),
     };
-    Error::Http(format!("GRDF injoignable ({message})"))
+    Error::Http(format!("{cause} ({})", url.host_port()))
 }
 
 #[cfg(test)]
@@ -697,7 +720,10 @@ mod tests {
             .collect();
         let (mut client, seen) = scripted(loops);
         let e = client.get("https://h.fr/", &[], &[]).unwrap_err();
-        assert!(e.to_string().contains("redirections"), "{e}");
+        assert_eq!(
+            e,
+            Error::Protocol("plus de 10 redirections, abandon (dernière vers h.fr:443)".into())
+        );
         assert_eq!(seen.borrow().len(), MAX_REDIRECTS + 1);
     }
 
@@ -716,7 +742,9 @@ mod tests {
             assert_eq!(
                 e,
                 Error::Protocol(
-                    "adresse invalide : seuls http:// et https:// sont pris en charge".into()
+                    "redirection 302 de h.fr:443 vers une adresse invalide : \
+                     seuls http:// et https:// sont pris en charge"
+                        .into()
                 ),
                 "{location}"
             );
@@ -892,15 +920,42 @@ mod tests {
     }
 
     #[test]
-    fn transport_errors_never_echo_addresses() {
-        let e = transport_error(ureq::Error::BadUri("https://h/?code=SECRET".into()));
-        assert!(!e.to_string().contains("SECRET"));
-        let e = transport_error(ureq::Error::HostNotFound);
-        assert_eq!(e, Error::Http("GRDF injoignable (hôte introuvable)".into()));
-        assert!(matches!(
-            transport_error(ureq::Error::ConnectionFailed),
-            Error::Http(_)
-        ));
+    fn transport_errors_name_the_target_never_the_address() {
+        let url = Url::http("https://connexion.grdf.fr/idp/idx/identify?code=SECRET").unwrap();
+        let e = transport_error(ureq::Error::BadUri("https://h/?code=SECRET".into()), &url);
+        assert!(!format!("{e} {e:?}").contains("SECRET"));
+        assert!(!e.to_string().contains("/idp"), "{e}");
+        let cases = [
+            (
+                ureq::Error::HostNotFound,
+                "hôte introuvable par le DNS (connexion.grdf.fr:443)",
+            ),
+            (
+                ureq::Error::Timeout(ureq::Timeout::Connect),
+                "délai de connexion de 10 s dépassé (connexion.grdf.fr:443)",
+            ),
+            (
+                ureq::Error::Timeout(ureq::Timeout::Resolve),
+                "délai de résolution DNS de 10 s dépassé (connexion.grdf.fr:443)",
+            ),
+            (
+                ureq::Error::Timeout(ureq::Timeout::RecvResponse),
+                "pas de réponse en 60 s (connexion.grdf.fr:443)",
+            ),
+            (
+                ureq::Error::Io(std::io::ErrorKind::ConnectionReset.into()),
+                "connexion réinitialisée par le pair (connexion.grdf.fr:443)",
+            ),
+            (
+                ureq::Error::ConnectionFailed,
+                "connexion impossible (connexion.grdf.fr:443)",
+            ),
+        ];
+        for (error, expected) in cases {
+            let e = transport_error(error, &url);
+            assert_eq!(e, Error::Http(expected.into()));
+            assert!(e.is_transient());
+        }
     }
 
     // --- Transport ureq contre un serveur local (127.0.0.1) ---
@@ -1013,10 +1068,10 @@ mod tests {
         let e = HttpClient::new(local(port))
             .get(&format!("http://127.0.0.1:{port}/?code=SECRET"), &[], &[])
             .unwrap_err();
-        match &e {
-            Error::Http(m) => assert!(m.starts_with("GRDF injoignable ("), "{m}"),
-            other => panic!("{other:?}"),
-        }
+        assert_eq!(
+            e,
+            Error::Http(format!("connexion refusée (127.0.0.1:{port})"))
+        );
         assert!(e.is_transient());
         assert!(!e.to_string().contains("SECRET"));
     }

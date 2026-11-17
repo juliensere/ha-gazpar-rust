@@ -315,6 +315,9 @@ mod tests {
     const PASSWORD: &str = "mot-de-passe-secret";
     const TOKEN: &str = "jeton-secret";
     const EMAIL: &str = "jean@example.org";
+    /// Panne passagère de GRDF, telle que le client GRDF la rend.
+    const TIMEOUT: &str = "GRDF, relevés du 2026-11-02 au 2026-11-15 : pas de réponse en 60 s \
+                           (monespace.grdf.fr:443) ; abandon après 4 tentatives";
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
@@ -631,7 +634,7 @@ mod tests {
     #[test]
     fn once_logs_the_error_and_exits_1() {
         let mut connector = FakeConnector::new(Script {
-            grdf_errors: vec![Error::Http("GRDF injoignable (délai dépassé)".into())],
+            grdf_errors: vec![Error::Http(TIMEOUT.into())],
             ..Script::default()
         });
         let (code, out, err) =
@@ -639,8 +642,7 @@ mod tests {
         assert_eq!(code, 1);
         assert!(out.is_empty());
         assert!(
-            err.trim_end()
-                .ends_with(" ERREUR HTTP : GRDF injoignable (délai dépassé)"),
+            err.trim_end().ends_with(&format!(" ERREUR {TIMEOUT}")),
             "{err}"
         );
         assert_eq!(connector.seen.borrow().ha_closes, 1);
@@ -704,7 +706,7 @@ mod tests {
     #[test]
     fn run_keeps_going_and_waits_the_full_interval() {
         let mut connector = FakeConnector::new(Script {
-            grdf_errors: vec![Error::Http("GRDF injoignable (délai dépassé)".into())],
+            grdf_errors: vec![Error::Http(TIMEOUT.into())],
             published: published(2),
             ..Script::default()
         });
@@ -718,7 +720,9 @@ mod tests {
         assert_eq!(code, 0, "{err}");
         assert_eq!(sleeps, [Duration::from_secs(3600); 3]);
         assert!(
-            err.contains(" ATTENTION HTTP : GRDF injoignable (délai dépassé) ; nouvel essai au prochain relevé, dans 60 min"),
+            err.contains(&format!(
+                " ATTENTION {TIMEOUT} ; nouvel essai au prochain relevé, dans 60 min"
+            )),
             "{err}"
         );
         assert!(err.contains("relevé : 2 jours importés"), "{err}");

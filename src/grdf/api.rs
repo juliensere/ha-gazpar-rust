@@ -50,6 +50,51 @@ const INFORMATIVE_PATH: &str = "/e-conso/pce/consommation/informatives";
 /// Fonction d'attente, `std::thread::sleep` en production.
 pub type Sleeper = Box<dyn FnMut(Duration)>;
 
+/// Appel à l'API, tel que nommé dans les erreurs et le journal :
+/// « GRDF, liste des PCE », « GRDF, relevés du 2026-10-18 au 2026-11-16 ».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Call {
+    /// `GET /api/e-conso/pce`.
+    PceList,
+    /// `GET /api/e-conso/pce/consommation/informatives` sur une fenêtre,
+    /// numérotée `index`/`count` quand la plage en compte plusieurs.
+    Readings {
+        from: Date,
+        to: Date,
+        index: usize,
+        count: usize,
+    },
+}
+
+impl Call {
+    fn path(self) -> &'static str {
+        match self {
+            Call::PceList => PCE_LIST_PATH,
+            Call::Readings { .. } => INFORMATIVE_PATH,
+        }
+    }
+}
+
+impl std::fmt::Display for Call {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Call::PceList => f.write_str("GRDF, liste des PCE"),
+            Call::Readings {
+                from,
+                to,
+                index,
+                count,
+            } => {
+                write!(f, "GRDF, relevés du {from} au {to}")?;
+                if count > 1 {
+                    write!(f, " (fenêtre {index}/{count})")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Paramètres du client, reçus de la configuration.
 #[derive(Debug)]
 pub struct GrdfSettings {
@@ -119,8 +164,9 @@ impl GrdfClient {
             self.login()?;
         }
         if !self.pce_checked {
-            let response = self.api_get(PCE_LIST_PATH, &[])?;
-            let pces = parse_pce_list(&response.body)?;
+            let call = Call::PceList;
+            let response = self.api_get(call, &[])?;
+            let pces = parse_pce_list(&response).map_err(|e| e.context(call))?;
             if !pces.contains(&self.pce) {
                 let known = if pces.is_empty() {
                     "aucun".to_owned()
@@ -128,18 +174,22 @@ impl GrdfClient {
                     pces.join(", ")
                 };
                 return Err(Error::Grdf(format!(
-                    "le PCE {} n'est pas rattaché à ce compte GRDF (PCE du compte : {known})",
+                    "le PCE {} n'est pas rattaché à ce compte GRDF (PCE du compte : {known}) ; \
+                     vérifiez GRDF_PCE",
                     self.pce
-                )));
+                ))
+                .context(call));
             }
             self.pce_checked = true;
         }
         Ok(())
     }
 
-    /// `GET <base>/api<path>` avec reprises et reconnexion unique.
-    fn api_get(&mut self, path: &str, query: &[(&str, &str)]) -> Result<Response, Error> {
-        let url = format!("{}/api{path}", self.base_url);
+    /// `GET <base>/api<chemin de call>` avec reprises et reconnexion
+    /// unique. Les erreurs de la requête sont replacées dans `call` ; celles
+    /// d'une reconnexion nomment déjà leur étape de connexion.
+    fn api_get(&mut self, call: Call, query: &[(&str, &str)]) -> Result<Response, Error> {
+        let url = format!("{}/api{}", self.base_url, call.path());
         let mut attempt = 1;
         let mut logged_in_again = false;
         loop {
@@ -151,44 +201,48 @@ impl GrdfClient {
                 }
             };
             let outcome = http.get(&url, query, &[("Accept", "application/json")]);
-            match decide(&outcome, path, &self.api_prefix, attempt, logged_in_again) {
+            match decide(&outcome, &self.api_prefix, attempt, logged_in_again) {
                 Decision::Accept => {
                     return outcome;
                 }
                 Decision::Relogin => {
-                    warn!("session GRDF expirée : reconnexion");
+                    warn!("{call} : session GRDF expirée, reconnexion (une seule fois)");
                     logged_in_again = true;
                     self.login()?;
                 }
                 Decision::Retry { delay, reason } => {
                     warn!(
-                        "{reason} : nouvel essai dans {} s ({} restant(s))",
+                        "{call} : {reason} ; nouvel essai dans {} s ({} restant(s))",
                         delay.as_secs_f64(),
                         MAX_ATTEMPTS - attempt
                     );
                     (self.sleep)(delay);
                     attempt += 1;
                 }
-                Decision::Fail(e) => return Err(e),
+                Decision::Fail(e) => return Err(e.context(call)),
             }
         }
     }
 
     /// Relevés d'une fenêtre (une requête).
-    fn informative_window(&mut self, from: Date, to: Date) -> Result<Vec<DailyReading>, Error> {
+    fn informative_window(&mut self, call: Call) -> Result<Vec<DailyReading>, Error> {
+        let Call::Readings { from, to, .. } = call else {
+            return Ok(Vec::new());
+        };
         let (from_text, to_text, pce) = (from.to_string(), to.to_string(), self.pce.clone());
         debug!("relevés GRDF du {from_text} au {to_text}");
         let response = self.api_get(
-            INFORMATIVE_PATH,
+            call,
             &[
                 ("dateDebut", &from_text),
                 ("dateFin", &to_text),
                 ("pceList[]", &pce),
             ],
         )?;
-        let parsed = readings::parse_informative(&response.body, &pce)?;
+        let parsed =
+            readings::parse_informative(&response.body, &pce).map_err(|e| e.context(call))?;
         for warning in &parsed.warnings {
-            warn!("relevés GRDF : {warning}");
+            warn!("{call} : {warning}");
         }
         Ok(parsed.readings)
     }
@@ -202,8 +256,14 @@ impl ConsumptionSource for GrdfClient {
         }
         self.ensure_ready()?;
         let mut all = Vec::new();
-        for (start, end) in windows {
-            all.extend(self.informative_window(start, end)?);
+        let count = windows.len();
+        for (i, (start, end)) in windows.into_iter().enumerate() {
+            all.extend(self.informative_window(Call::Readings {
+                from: start,
+                to: end,
+                index: i + 1,
+                count,
+            })?);
         }
         Ok(merge(all, from, to))
     }
@@ -285,64 +345,90 @@ enum Decision {
 
 /// Choix après une tentative, dans l'ordre d'`api_client.py` : erreur
 /// réseau, session expirée, 429, HTML, statut autre que 200.
+///
+/// Les causes nomment l'hôte et le port qui ont répondu, jamais l'adresse ;
+/// l'appelant ajoute l'opération ([`Call`]). Un abandon après
+/// [`MAX_ATTEMPTS`] tentatives garde la cause de la dernière et le dit.
 fn decide(
     outcome: &Result<Response, Error>,
-    path: &str,
     api_prefix: &str,
     attempt: u32,
     logged_in_again: bool,
 ) -> Decision {
     let retry = |delay: Duration, reason: String, last_error: Error| {
         if attempt >= MAX_ATTEMPTS {
-            Decision::Fail(last_error)
+            Decision::Fail(
+                last_error.map_message(|m| format!("{m} ; abandon après {attempt} tentatives")),
+            )
         } else {
             Decision::Retry { delay, reason }
         }
     };
     let response = match outcome {
-        // Le message nomme déjà GRDF (`grdf::http`) : l'erreur finale est
-        // celle du transport, telle quelle.
+        // La cause nomme déjà l'hôte et le port (`grdf::http`).
         Err(e) if e.is_transient() => {
-            return retry(backoff(attempt), format!("{e}, appel {path}"), e.clone());
+            return retry(backoff(attempt), e.to_string(), e.clone());
         }
         Err(other) => return Decision::Fail(other.clone()),
         Ok(response) => response,
     };
+    let target = response.final_url.host_port();
     if is_session_expired(response, api_prefix) {
         return if logged_in_again {
             Decision::Fail(Error::GrdfLogin(format!(
-                "session expirée de nouveau juste après la reconnexion ({path})"
+                "session expirée de nouveau juste après la reconnexion ({}, {target})",
+                expiry_sign(response)
             )))
         } else {
             Decision::Relogin
         };
     }
     if response.status == 429 {
-        let reason = format!("GRDF limite le débit des requêtes ({path}, statut 429)");
         let delay = retry_after(response.retry_after.as_deref()).unwrap_or(backoff(attempt));
+        // Valeur brute de l'en-tête, raccourcie : un nombre ou une date.
+        let announced = response.retry_after.as_deref().map_or(String::new(), |v| {
+            let v: String = v.trim().chars().take(40).collect();
+            format!(", Retry-After « {v} »")
+        });
+        let reason = format!("débit limité par GRDF (statut HTTP 429{announced}, {target})");
         return retry(delay, reason.clone(), Error::Grdf(reason));
     }
     if response.is_html() {
         let reason = format!(
-            "réponse HTML inattendue de GRDF ({path}, statut {})",
+            "page HTML au lieu de JSON (statut HTTP {}, {target})",
             response.status
         );
         return retry(backoff(attempt), reason.clone(), Error::Grdf(reason));
     }
     if response.status != 200 {
         return Decision::Fail(Error::Grdf(format!(
-            "{path} : statut HTTP {}",
+            "statut HTTP {} ({target})",
             response.status
         )));
     }
     Decision::Accept
 }
 
+/// Signe d'une session expirée, pour un message.
+fn expiry_sign(response: &Response) -> String {
+    if response.status == 401 {
+        "statut HTTP 401".to_owned()
+    } else {
+        format!("page HTML hors de l'API, statut HTTP {}", response.status)
+    }
+}
+
 /// `idObject` de chaque PCE du compte.
-fn parse_pce_list(body: &str) -> Result<Vec<String>, Error> {
-    let bad = || Error::Grdf("liste des PCE : réponse inattendue".to_owned());
-    let value: Value = serde_json::from_str(body).map_err(|_| bad())?;
-    let items = value.as_array().ok_or_else(bad)?;
+fn parse_pce_list(response: &Response) -> Result<Vec<String>, Error> {
+    let bad = |why: &str| {
+        Error::Grdf(format!(
+            "réponse inattendue, {why} (statut HTTP {}, {})",
+            response.status,
+            response.final_url.host_port()
+        ))
+    };
+    let value: Value = serde_json::from_str(&response.body).map_err(|_| bad("JSON illisible"))?;
+    let items = value.as_array().ok_or_else(|| bad("liste attendue"))?;
     Ok(items
         .iter()
         .filter_map(|item| item.get("idObject").and_then(Value::as_str))
@@ -377,7 +463,7 @@ mod tests {
     }
 
     fn decide1(outcome: Result<Response, Error>) -> Decision {
-        decide(&outcome, "/e-conso/pce", PREFIX, 1, false)
+        decide(&outcome, PREFIX, 1, false)
     }
 
     // --- Délais ---
@@ -436,10 +522,11 @@ mod tests {
             response(200, "text/html", "https://monespace.grdf.fr/"),
         ] {
             let outcome = Ok(expired);
-            assert_eq!(decide(&outcome, "/p", PREFIX, 1, false), Decision::Relogin);
-            let again = decide(&outcome, "/p", PREFIX, 1, true);
+            assert_eq!(decide(&outcome, PREFIX, 1, false), Decision::Relogin);
+            let again = decide(&outcome, PREFIX, 1, true);
             assert!(
-                matches!(&again, Decision::Fail(Error::GrdfLogin(m)) if m.contains("de nouveau")),
+                matches!(&again, Decision::Fail(Error::GrdfLogin(m))
+                    if m.starts_with("session expirée de nouveau juste après la reconnexion (")),
                 "{again:?}"
             );
         }
@@ -451,18 +538,33 @@ mod tests {
         throttled.retry_after = Some("7".into());
         let outcome = Ok(throttled);
         assert!(matches!(
-            decide(&outcome, "/p", PREFIX, 1, false),
+            decide(&outcome, PREFIX, 1, false),
             Decision::Retry { delay, .. } if delay == Duration::from_secs(7)
         ));
         let outcome = Ok(response(429, "text/html", PREFIX));
         assert!(matches!(
-            decide(&outcome, "/p", PREFIX, 2, false),
+            decide(&outcome, PREFIX, 2, false),
             Decision::Retry { delay, .. } if delay == Duration::from_secs(6)
         ));
-        let last = decide(&outcome, "/p", PREFIX, MAX_ATTEMPTS, false);
-        assert!(
-            matches!(&last, Decision::Fail(Error::Grdf(m)) if m.contains("429")),
-            "{last:?}"
+        let last = decide(&outcome, PREFIX, MAX_ATTEMPTS, false);
+        assert_eq!(
+            last,
+            Decision::Fail(Error::Grdf(
+                "débit limité par GRDF (statut HTTP 429, monespace.grdf.fr:443) ; \
+                 abandon après 4 tentatives"
+                    .into()
+            ))
+        );
+        let mut throttled = response(429, "text/html", PREFIX);
+        throttled.retry_after = Some(" 600 ".into());
+        assert_eq!(
+            decide(&Ok(throttled), PREFIX, 1, false),
+            Decision::Retry {
+                delay: MAX_RETRY_AFTER,
+                reason: "débit limité par GRDF (statut HTTP 429, Retry-After « 600 », \
+                         monespace.grdf.fr:443)"
+                    .into()
+            }
         );
     }
 
@@ -474,7 +576,7 @@ mod tests {
             "https://monespace.grdf.fr/api/e-conso/pce",
         ));
         let delays: Vec<Decision> = (1..=MAX_ATTEMPTS)
-            .map(|a| decide(&outcome, "/p", PREFIX, a, false))
+            .map(|a| decide(&outcome, PREFIX, a, false))
             .collect();
         assert_eq!(
             delays[..3]
@@ -486,25 +588,64 @@ mod tests {
                 .collect::<Vec<_>>(),
             [3, 6, 12]
         );
-        assert!(matches!(&delays[3], Decision::Fail(Error::Grdf(m)) if m.contains("HTML")));
+        assert_eq!(
+            delays[3],
+            Decision::Fail(Error::Grdf(
+                "page HTML au lieu de JSON (statut HTTP 200, monespace.grdf.fr:443) ; \
+                 abandon après 4 tentatives"
+                    .into()
+            ))
+        );
     }
 
     #[test]
     fn network_errors_are_retried_then_raised() {
-        let error = Error::Http("GRDF injoignable (délai dépassé)".into());
-        let outcome = Err(error.clone());
+        let error = Error::Http("pas de réponse en 60 s (monespace.grdf.fr:443)".into());
+        let outcome = Err(error);
         assert_eq!(
-            decide(&outcome, "/p", PREFIX, 1, false),
+            decide(&outcome, PREFIX, 1, false),
             Decision::Retry {
                 delay: Duration::from_secs(3),
-                reason: "HTTP : GRDF injoignable (délai dépassé), appel /p".into()
+                reason: "pas de réponse en 60 s (monespace.grdf.fr:443)".into()
             }
         );
-        // L'erreur finale est celle du transport, sans contexte ajouté deux
-        // fois.
+        // L'erreur finale est celle du transport, toujours passagère, qui
+        // dit qu'on a abandonné.
+        let last = decide(&outcome, PREFIX, MAX_ATTEMPTS, false);
         assert_eq!(
-            decide(&outcome, "/p", PREFIX, MAX_ATTEMPTS, false),
-            Decision::Fail(error)
+            last,
+            Decision::Fail(Error::Http(
+                "pas de réponse en 60 s (monespace.grdf.fr:443) ; abandon après 4 tentatives"
+                    .into()
+            ))
+        );
+    }
+
+    #[test]
+    fn calls_are_named_for_messages() {
+        assert_eq!(Call::PceList.to_string(), "GRDF, liste des PCE");
+        let one = Call::Readings {
+            from: date(2026, 10, 18),
+            to: date(2026, 11, 16),
+            index: 1,
+            count: 1,
+        };
+        assert_eq!(one.to_string(), "GRDF, relevés du 2026-10-18 au 2026-11-16");
+        let third = Call::Readings {
+            from: date(2025, 11, 30),
+            to: date(2026, 11, 29),
+            index: 3,
+            count: 4,
+        };
+        assert_eq!(
+            third.to_string(),
+            "GRDF, relevés du 2025-11-30 au 2026-11-29 (fenêtre 3/4)"
+        );
+        let e = Error::Grdf("statut HTTP 500 (monespace.grdf.fr:443)".into()).context(third);
+        assert_eq!(
+            e.to_string(),
+            "GRDF, relevés du 2025-11-30 au 2026-11-29 (fenêtre 3/4) : statut HTTP 500 \
+             (monespace.grdf.fr:443)"
         );
     }
 
@@ -517,9 +658,11 @@ mod tests {
         ));
         for status in [400, 403, 404, 500, 503] {
             let d = decide1(Ok(response(status, "application/json", PREFIX)));
-            assert!(
-                matches!(&d, Decision::Fail(Error::Grdf(m)) if m.contains(&status.to_string())),
-                "{d:?}"
+            assert_eq!(
+                d,
+                Decision::Fail(Error::Grdf(format!(
+                    "statut HTTP {status} (monespace.grdf.fr:443)"
+                )))
             );
         }
     }
@@ -584,10 +727,30 @@ mod tests {
     fn pce_list() {
         let body =
             r#"[{"idObject": "12345678901234", "alias": "Maison"}, {"x": 1}, {"idObject": "2"}]"#;
-        assert_eq!(parse_pce_list(body).unwrap(), ["12345678901234", "2"]);
-        assert!(parse_pce_list("[]").unwrap().is_empty());
-        for bad in ["{}", "<html>", ""] {
-            assert!(parse_pce_list(bad).is_err());
+        let with_body = |body: &str| Response {
+            body: body.to_owned(),
+            ..response(
+                200,
+                "application/json",
+                "https://monespace.grdf.fr/api/e-conso/pce",
+            )
+        };
+        assert_eq!(
+            parse_pce_list(&with_body(body)).unwrap(),
+            ["12345678901234", "2"]
+        );
+        assert!(parse_pce_list(&with_body("[]")).unwrap().is_empty());
+        for (bad, why) in [
+            ("{}", "liste attendue"),
+            ("<html>", "JSON illisible"),
+            ("", "JSON illisible"),
+        ] {
+            assert_eq!(
+                parse_pce_list(&with_body(bad)).unwrap_err(),
+                Error::Grdf(format!(
+                    "réponse inattendue, {why} (statut HTTP 200, monespace.grdf.fr:443)"
+                ))
+            );
         }
     }
 

@@ -50,6 +50,11 @@ fn client(fake: &FakeGrdf) -> (GrdfClient, Sleeps) {
 const FROM: Date = date(2021, 7, 26);
 const TO: Date = date(2021, 8, 22);
 
+/// `127.0.0.1:port` d'une adresse `http://127.0.0.1:port`.
+fn host_port(url: &str) -> &str {
+    url.trim_start_matches("http://")
+}
+
 fn secs(sleeps: &Sleeps) -> Vec<u64> {
     sleeps.borrow().iter().map(Duration::as_secs).collect()
 }
@@ -156,13 +161,12 @@ fn unknown_pce_is_refused_before_any_reading() {
     let fake = FakeGrdf::start_with_pces(&[PCE, "22222222222222"]);
     let (mut grdf, _) = client_for(&fake, "11111111111111", PASSWORD);
     let e = grdf.daily_readings(FROM, TO).unwrap_err();
-    let shown = e.to_string();
-    assert!(matches!(e, Error::Grdf(_)), "{e:?}");
-    assert!(shown.contains("11111111111111"), "{shown}");
-    assert!(shown.contains("n'est pas rattaché"), "{shown}");
-    assert!(
-        shown.contains(PCE) && shown.contains("22222222222222"),
-        "{shown}"
+    assert_eq!(
+        e,
+        Error::Grdf(format!(
+            "GRDF, liste des PCE : le PCE 11111111111111 n'est pas rattaché à ce compte GRDF \
+             (PCE du compte : {PCE}, 22222222222222) ; vérifiez GRDF_PCE"
+        ))
     );
     assert!(fake.counters().consumption.is_empty());
 }
@@ -257,10 +261,63 @@ fn persistent_html_errors_give_up_after_max_attempts() {
         ..Faults::default()
     });
     let e = grdf.daily_readings(FROM, TO).unwrap_err();
-    assert!(matches!(&e, Error::Grdf(m) if m.contains("HTML")), "{e:?}");
+    assert_eq!(
+        e,
+        Error::Grdf(format!(
+            "GRDF, relevés du 2021-07-26 au 2021-08-22 : page HTML au lieu de JSON \
+             (statut HTTP 500, {}) ; abandon après 4 tentatives",
+            host_port(fake.base_url())
+        ))
+    );
     assert_eq!(secs(&sleeps), [3, 6, 12]);
     let calls = fake.counters().consumption.len() - 1;
     assert_eq!(calls, MAX_ATTEMPTS as usize);
+}
+
+#[test]
+fn persistent_network_failure_names_the_call_the_target_and_the_attempts() {
+    let fake = FakeGrdf::start();
+    let (mut grdf, sleeps) = client(&fake);
+    grdf.daily_readings(FROM, FROM).unwrap();
+    fake.set_faults(Faults {
+        drop_connections: 100,
+        ..Faults::default()
+    });
+    let e = grdf.daily_readings(FROM, TO).unwrap_err();
+    assert!(e.is_transient(), "{e:?}");
+    let shown = e.to_string();
+    assert!(
+        shown.starts_with("GRDF, relevés du 2021-07-26 au 2021-08-22 : "),
+        "{shown}"
+    );
+    assert!(
+        shown.ends_with(&format!(
+            " ({}) ; abandon après 4 tentatives",
+            host_port(fake.base_url())
+        )),
+        "{shown}"
+    );
+    assert_eq!(secs(&sleeps), [3, 6, 12]);
+}
+
+#[test]
+fn unexpected_status_names_the_call_and_the_target() {
+    let fake = FakeGrdf::start();
+    let (mut grdf, _) = client(&fake);
+    grdf.daily_readings(FROM, FROM).unwrap();
+    fake.set_faults(Faults {
+        json_errors: 1,
+        ..Faults::default()
+    });
+    let e = grdf.daily_readings(FROM, TO).unwrap_err();
+    assert_eq!(
+        e,
+        Error::Grdf(format!(
+            "GRDF, relevés du 2021-07-26 au 2021-08-22 : statut HTTP 500 ({})",
+            host_port(fake.base_url())
+        ))
+    );
+    assert!(!e.is_transient());
 }
 
 #[test]
@@ -426,8 +483,8 @@ fn secrets_never_reach_logs_or_errors() {
     for expected in [
         " DEBUG connexion 4/5",
         " INFO connecté à Mon Espace GRDF",
-        " ATTENTION session GRDF expirée",
-        " ATTENTION GRDF limite le débit",
+        " ATTENTION GRDF, relevés du 2021-07-26 au 2021-08-22 : session GRDF expirée",
+        " ATTENTION GRDF, relevés du 2021-07-26 au 2021-08-22 : débit limité par GRDF",
         "ERREUR mot de passe",
         "ERREUR session",
         "ERREUR pce",

@@ -527,7 +527,7 @@ mod tests {
         let mut grdf = Network.grdf(&config).unwrap();
         let today = jiff::civil::date(2026, 11, 16);
         match grdf.daily_readings(today, today) {
-            Err(Error::Http(m)) => assert!(m.starts_with("GRDF injoignable ("), "{m}"),
+            Err(e) => assert_eq!(e, Error::Http("connexion refusée (127.0.0.1:1)".into())),
             other => panic!("{other:?}"),
         }
     }

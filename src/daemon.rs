@@ -180,7 +180,9 @@ mod tests {
     fn transient_error_then_success() {
         let mut host = Script::new(vec![
             Err(Error::Http(
-                "GRDF injoignable (connexion impossible)".into(),
+                "GRDF, connexion 1/5 (page d'accueil) : connexion refusée \
+                 (monespace.grdf.fr:443)"
+                    .into(),
             )),
             Ok(report()),
         ]);
@@ -188,10 +190,8 @@ mod tests {
         assert_eq!(host.readings, 2);
         assert_eq!(
             host.logs(Level::Warn),
-            [
-                "HTTP : GRDF injoignable (connexion impossible) ; nouvel essai au prochain \
-              relevé, dans 480 min"
-            ]
+            ["GRDF, connexion 1/5 (page d'accueil) : connexion refusée \
+                 (monespace.grdf.fr:443) ; nouvel essai au prochain relevé, dans 480 min"]
         );
         assert!(host.logs(Level::Error).is_empty());
     }

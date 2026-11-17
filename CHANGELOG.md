@@ -8,6 +8,10 @@ Chaque version publiée a une section dont l'en-tête est exactement `## [AAAA.M
 
 ## Non publié
 
+### Modifications
+
+- Messages d'erreur de l'API GRDF : chaque erreur nomme l'appel (« GRDF, liste des PCE », « GRDF, relevés du 2026-10-18 au 2026-11-16 »), puis la cause en français avec l'hôte et le port visés, jamais l'adresse complète : statut HTTP, page HTML au lieu de JSON, débit limité (avec `Retry-After`), délai de connexion ou de lecture dépassé, connexion refusée, hôte introuvable par le DNS… Après les reprises, l'erreur précise « abandon après 4 tentatives ». Les préfixes techniques « HTTP : » et « API GRDF : » disparaissent. Un PCE absent du compte invite à vérifier `GRDF_PCE`.
+
 ## [2026.9.0-alpha.1] - 2026-11-17
 
 Préversion, validée avec Home Assistant 2026.9 et testée contre de faux serveurs GRDF, mais pas encore essayée sur un vrai compte GRDF. Image `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.1` (ni `2026.9` ni `latest`). Lancez `ha-gazpar check` avant `run`.

@@ -23,7 +23,7 @@
 //! les essais du binaire, qui suit la vraie date du jour, s'en servent.
 //!
 //! Pannes pilotables ([`Faults`]) : 429, session expirée (401 ou redirection
-//! vers la page de connexion), page HTML d'erreur, connexion coupée,
+//! vers la page de connexion), page HTML ou JSON d'erreur, connexion coupée,
 //! redirection ou `success.href` vers un autre hôte (`localhost` au lieu de
 //! `127.0.0.1`, donc toujours local si le client le suivait à tort),
 //! service de connexion indisponible (503 à `challenge/answer`).
@@ -82,6 +82,8 @@ pub struct Faults {
     pub expiry: Expiry,
     /// Nombre de pages HTML d'erreur (statut 500) servies sous `/api`.
     pub html_errors: u32,
+    /// Nombre d'erreurs JSON (statut 500) servies sous `/api` : non reprises.
+    pub json_errors: u32,
     /// Nombre de connexions fermées sans réponse.
     pub drop_connections: u32,
     /// `GET /` redirige vers la page de connexion sur l'hôte `localhost`.
@@ -502,6 +504,10 @@ fn api_route(state: &mut State, request: &Request) -> Option<Reply> {
     if state.faults.html_errors > 0 {
         state.faults.html_errors -= 1;
         return Some(Reply::html(500, "<html>Erreur technique</html>"));
+    }
+    if state.faults.json_errors > 0 {
+        state.faults.json_errors -= 1;
+        return Some(Reply::json(500, &json!({"code": 500, "message": "Erreur"})));
     }
     if request.path == "/api/e-conso/pce" {
         state.counters.pce_list += 1;
