@@ -4,9 +4,13 @@ Toutes les évolutions notables de ha-gazpar-rust sont consignées ici, la versi
 
 Le format suit [Keep a Changelog](https://keepachangelog.com/fr/). Les numéros de version sont de la forme `AAAA.M.N` : `AAAA.M` est la version de Home Assistant contre laquelle la version a été validée, `N` le rang de la publication dans cette lignée.
 
-Chaque version publiée a une section dont l'en-tête est exactement `## [AAAA.M.N] - AAAA-MM-JJ` (date de publication), éventuellement suivi des versions de Home Assistant validées : `make release-check` et la publication s'appuient sur cet en-tête, et le texte de la version GitHub est le contenu de la section, jusqu'à l'en-tête suivant.
+Chaque version publiée a une section dont l'en-tête est exactement `## [AAAA.M.N] - AAAA-MM-JJ` (date de publication), éventuellement suivi des versions de Home Assistant validées ; une préversion s'écrit `AAAA.M.N-alpha.K` (ou `-beta.K`, `-rc.K`) : `make release-check` et la publication s'appuient sur cet en-tête, et le texte de la version GitHub est le contenu de la section, jusqu'à l'en-tête suivant.
 
 ## Non publié
+
+## [2026.9.0-alpha.1] - 2026-11-17
+
+Préversion, validée avec Home Assistant 2026.9 et testée contre de faux serveurs GRDF, mais pas encore essayée sur un vrai compte GRDF. Image `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.1` (ni `2026.9` ni `latest`). Lancez `ha-gazpar check` avant `run`.
 
 ### Nouveautés
 
