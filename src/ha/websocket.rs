@@ -34,7 +34,7 @@ use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use crate::error::Error;
+use crate::error::{self, Error};
 use crate::url::Url;
 
 /// Taille maximale d'un message reçu, fragments réunis (16 Mio).
@@ -346,22 +346,47 @@ impl<S: Read + Write> WebSocket<S> {
 }
 
 /// Ouvre une connexion WebSocket vers `ws://hôte[:port][/chemin]`. Le pair
-/// est Home Assistant : une erreur d'entrée-sortie (résolution, connexion
-/// TCP, délai, poignée de main coupée) le dit dès ici, « Home Assistant
-/// injoignable (…) ».
+/// est Home Assistant : une erreur le dit dès ici, avec la phase qui a
+/// échoué, la cible et quoi vérifier :
+///
+/// ```text
+/// Home Assistant (192.168.0.10:8123), connexion TCP : connexion refusée ; vérifiez HA_URL…
+/// Home Assistant (192.168.0.10:8123), poignée de main WebSocket : réponse « HTTP/1.1 404 … »…
+/// ```
+///
+/// Classification inchangée : réseau ([`Error::Io`], passager) pour la
+/// résolution, la connexion TCP et une poignée de main coupée ; réponse
+/// qui n'est pas du WebSocket ([`Error::Protocol`]) sinon.
 pub fn connect(url: &str, timeouts: Timeouts) -> Result<WebSocket<TcpStream>, Error> {
-    open(url, timeouts).map_err(|e| match e {
-        Error::Io(m) => Error::Io(format!("Home Assistant injoignable ({m})")),
-        other => other,
-    })
+    let target = Target::new(Url::ws(url)?);
+    let host_port = target.0.host_port();
+    let context = |phase: &str| format!("Home Assistant ({host_port}), {phase}");
+    let stream = tcp(&target, timeouts).map_err(|e| {
+        e.context(context("connexion TCP")).map_message(|m| {
+            format!(
+                "{m} ; vérifiez HA_URL (hôte et port de Home Assistant, 8123 en général) et que \
+                 Home Assistant est démarré"
+            )
+        })
+    })?;
+    let mut ws = WebSocket::new(stream, Role::Client);
+    let nonce = [ws.noise.next_u64(), ws.noise.next_u64()].map(u64::to_le_bytes);
+    ws.handshake(
+        &target.0.authority(),
+        &target.0.path_and_query(),
+        &base64(&nonce.concat()),
+    )
+    .map_err(|e| e.context(context("poignée de main WebSocket")))?;
+    Ok(ws)
 }
 
-fn open(url: &str, timeouts: Timeouts) -> Result<WebSocket<TcpStream>, Error> {
-    let target = Target::new(Url::ws(url)?);
+/// Résolution du nom puis connexion TCP à la première adresse qui répond,
+/// délais réglés.
+fn tcp(target: &Target, timeouts: Timeouts) -> Result<TcpStream, Error> {
     let addrs = (target.socket_host(), target.port())
         .to_socket_addrs()
-        .map_err(|e| Error::Io(format!("résolution de {} : {e}", target.socket_host())))?;
-    let mut last_error = String::from("aucune adresse");
+        .map_err(|e| Error::Io(format!("hôte introuvable par le DNS ({e})")))?;
+    let mut last_error = String::from("hôte introuvable par le DNS (aucune adresse)");
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, timeouts.connect) {
             Ok(stream) => {
@@ -369,23 +394,18 @@ fn open(url: &str, timeouts: Timeouts) -> Result<WebSocket<TcpStream>, Error> {
                 stream.set_write_timeout(Some(timeouts.write))?;
                 // Petites trames : inutile d'attendre l'algorithme de Nagle.
                 let _ = stream.set_nodelay(true);
-                let mut ws = WebSocket::new(stream, Role::Client);
-                let nonce = [ws.noise.next_u64(), ws.noise.next_u64()].map(u64::to_le_bytes);
-                ws.handshake(
-                    &target.0.authority(),
-                    &target.0.path_and_query(),
-                    &base64(&nonce.concat()),
-                )?;
-                return Ok(ws);
+                return Ok(stream);
             }
-            Err(e) => last_error = io_error(e).to_string(),
+            Err(e) if is_timeout(&e) => {
+                last_error = format!(
+                    "délai de connexion de {} s dépassé",
+                    timeouts.connect.as_secs_f64()
+                );
+            }
+            Err(e) => last_error = error::io_cause(&e),
         }
     }
-    Err(Error::Io(format!(
-        "connexion à {}:{} impossible : {last_error}",
-        target.socket_host(),
-        target.port()
-    )))
+    Err(Error::Io(last_error))
 }
 
 /// Valeur de `Sec-WebSocket-Accept` attendue pour une clé (RFC 6455 §4.2.2).
@@ -421,7 +441,10 @@ fn check_handshake(head: &str, key: &str) -> Result<(), Error> {
     let status = lines.next().unwrap_or_default();
     if !status.starts_with("HTTP/1.1 101") {
         let shown: String = status.chars().take(80).collect();
-        return Err(protocol(format!("poignée de main refusée : {shown:?}")));
+        return Err(Error::Protocol(format!(
+            "réponse « {shown} » au lieu de « HTTP/1.1 101 » : ce n'est pas l'API \
+             WebSocket de Home Assistant ; vérifiez HA_URL (ws://hôte:8123/api/websocket)"
+        )));
     }
     let header = |name: &str| {
         lines.clone().find_map(|l| {
@@ -502,13 +525,18 @@ fn read_part<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<(), Error> {
     })
 }
 
+/// Erreur d'entrée-sortie sur la connexion : cause en français
+/// ([`error::io_cause`]) ; un délai dépassé dit qu'on attendait une réponse.
 fn io_error(e: io::Error) -> Error {
-    match e.kind() {
-        ErrorKind::WouldBlock | ErrorKind::TimedOut => {
-            Error::Io("délai dépassé sur la connexion WebSocket".into())
-        }
-        _ => Error::Io(format!("connexion WebSocket : {e}")),
+    if is_timeout(&e) {
+        Error::Io("pas de réponse dans le délai imparti".into())
+    } else {
+        Error::Io(error::io_cause(&e))
     }
+}
+
+fn is_timeout(e: &io::Error) -> bool {
+    matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
 }
 
 fn protocol(message: impl Into<String>) -> Error {
@@ -992,7 +1020,10 @@ mod tests {
         let ok = response(RFC_ACCEPT);
         let cases = [
             ("HTTP/1.1 404 Not Found\r\n\r\n".to_owned(), "404"),
-            (ok.replace("HTTP/1.1", "HTTP/1.0"), "refusée"),
+            (
+                ok.replace("HTTP/1.1", "HTTP/1.0"),
+                "au lieu de « HTTP/1.1 101 »",
+            ),
             (ok.replace("Upgrade: websocket\r\n", ""), "Upgrade"),
             (
                 ok.replace("Connection: Upgrade", "Connection: close"),
@@ -1151,9 +1182,11 @@ mod tests {
         match connect(&url, quick()) {
             Err(e) => assert_eq!(
                 e,
-                Error::Io(
-                    "Home Assistant injoignable (délai dépassé sur la connexion WebSocket)".into()
-                )
+                Error::Io(format!(
+                    "Home Assistant ({}), poignée de main WebSocket : pas de réponse dans le \
+                     délai imparti",
+                    listener.local_addr().unwrap()
+                ))
             ),
             Ok(_) => panic!("connexion inattendue"),
         }
@@ -1166,14 +1199,17 @@ mod tests {
             .local_addr()
             .unwrap();
         match connect(&format!("ws://{addr}/"), quick()) {
-            Err(Error::Io(m)) => {
-                assert!(
-                    m.starts_with("Home Assistant injoignable (connexion à 127.0.0.1:"),
-                    "{m}"
+            Err(e) => {
+                assert_eq!(
+                    e,
+                    Error::Io(format!(
+                        "Home Assistant ({addr}), connexion TCP : connexion refusée ; vérifiez \
+                         HA_URL (hôte et port de Home Assistant, 8123 en général) et que Home \
+                         Assistant est démarré"
+                    ))
                 );
-                assert!(m.contains("impossible"), "{m}");
+                assert!(e.is_transient());
             }
-            Err(e) => panic!("{e}"),
             Ok(_) => panic!("connexion inattendue"),
         }
     }

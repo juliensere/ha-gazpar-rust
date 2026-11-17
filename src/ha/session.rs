@@ -3,7 +3,9 @@
 //! `auth_required` → `auth` → `auth_ok` (version de HA retenue) ou
 //! `auth_invalid` ; puis commandes numérotées par `id` croissant, dont on
 //! attend la réponse `result` de même `id` en ignorant les autres messages.
-//! Une réponse `success: false` devient une [`Error::HomeAssistant`].
+//! Une réponse `success: false` devient une [`Error::HomeAssistant`] qui
+//! cite la commande, le message et le code d'erreur de HA, raccourcis ; le
+//! contexte (cible, statistique) est ajouté par `stats`.
 //!
 //! Le jeton n'est lu en clair ([`Secret::expose`]) que pour construire le
 //! message `auth`, qui n'est jamais journalisé ; tout texte renvoyé par HA
@@ -16,6 +18,7 @@
 //! Dépendances : `ha::websocket`, `secret`, `error`, `log`, `serde_json`.
 
 use std::io::{Read, Write};
+use std::time::Instant;
 
 use serde_json::{Value, json};
 
@@ -25,6 +28,8 @@ use crate::secret::{self, Secret};
 
 /// Longueur maximale d'un texte de Home Assistant recopié dans une erreur.
 const MAX_TEXT_CHARS: usize = 200;
+/// Longueur maximale d'un code d'erreur de Home Assistant recopié.
+const MAX_CODE_CHARS: usize = 64;
 
 /// Échange de messages texte : ce que la session demande au WebSocket.
 pub trait Transport {
@@ -82,7 +87,9 @@ impl<T: Transport> Session<T> {
             "auth_invalid" => {
                 let why = reply.get("message").and_then(Value::as_str);
                 Err(Error::HomeAssistant(format!(
-                    "authentification refusée : {}",
+                    "jeton refusé (« {} ») ; créez un jeton d'accès longue durée (profil de \
+                     l'utilisateur dans Home Assistant, onglet Sécurité) et mettez-le dans \
+                     HA_TOKEN",
                     scrub(why.unwrap_or("motif non précisé"), token)
                 )))
             }
@@ -108,6 +115,7 @@ impl<T: Transport> Session<T> {
         };
         object.insert("id".into(), id.into());
         self.next_id += 1;
+        let started = Instant::now();
         self.transport.send_text(&payload.to_string())?;
         loop {
             let mut reply = receive(&mut self.transport)?;
@@ -117,14 +125,27 @@ impl<T: Transport> Session<T> {
                 debug!("Home Assistant : message ignoré en attendant la réponse {id} ({kind})");
                 continue;
             }
+            let elapsed = started.elapsed().as_millis();
             if reply.get("success").and_then(Value::as_bool) == Some(true) {
+                debug!("Home Assistant : {kind} (n° {id}) → succès en {elapsed} ms");
                 return Ok(reply.get_mut("result").map(Value::take).unwrap_or_default());
             }
+            debug!("Home Assistant : {kind} (n° {id}) → refus en {elapsed} ms");
             let error = &reply["error"];
+            let code = error["code"].as_str().unwrap_or("sans code");
+            let advice = if code == "unauthorized" {
+                " ; l'utilisateur du jeton HA_TOKEN doit être administrateur"
+            } else {
+                ""
+            };
             return Err(Error::HomeAssistant(format!(
-                "{kind} refusée : {} ({})",
-                error["message"].as_str().unwrap_or("sans message"),
-                error["code"].as_str().unwrap_or("sans code"),
+                "{kind} refusée par Home Assistant : {} (code {}){advice}",
+                secret::scrub(
+                    error["message"].as_str().unwrap_or("sans message"),
+                    &[],
+                    MAX_TEXT_CHARS
+                ),
+                secret::scrub(code, &[], MAX_CODE_CHARS),
             )));
         }
     }
@@ -145,8 +166,7 @@ fn receive<T: Transport>(transport: &mut T) -> Result<Value, Error> {
         .recv_text()?
         .ok_or_else(|| Error::HomeAssistant("connexion fermée par Home Assistant".into()))?;
     // L'erreur de serde_json donne la position, jamais le contenu.
-    serde_json::from_str(&text)
-        .map_err(|e| Error::Protocol(format!("Home Assistant : message JSON invalide ({e})")))
+    serde_json::from_str(&text).map_err(|e| Error::Protocol(format!("message JSON invalide ({e})")))
 }
 
 fn message_type(message: &Value) -> &str {
@@ -155,7 +175,7 @@ fn message_type(message: &Value) -> &str {
 
 fn unexpected(expected: &str, message: &Value, token: &Secret) -> Error {
     Error::Protocol(format!(
-        "Home Assistant : {expected} attendu, reçu le type {:?}",
+        "message {expected} attendu, reçu le type {:?}",
         scrub(message_type(message), token)
     ))
 }
@@ -301,15 +321,19 @@ mod tests {
         assert_eq!(
             e,
             Error::HomeAssistant(
-                "authentification refusée : Invalid access token or password".into()
+                "jeton refusé (« Invalid access token or password ») ; créez un jeton d'accès \
+                 longue durée (profil de l'utilisateur dans Home Assistant, onglet Sécurité) et \
+                 mettez-le dans HA_TOKEN"
+                    .into()
             )
         );
         // Même si HA renvoyait le jeton dans son message, il est masqué.
         let reply = json!({ "type": "auth_invalid", "message": format!("jeton {TOKEN} refusé") });
         let e = auth_failure(required(), vec![reply]);
-        assert_eq!(
-            e,
-            Error::HomeAssistant("authentification refusée : jeton *** refusé".into())
+        assert!(
+            e.to_string()
+                .starts_with("jeton refusé (« jeton *** refusé ») ; "),
+            "{e}"
         );
         let e = auth_failure(required(), vec![json!({ "type": "auth_invalid" })]);
         assert!(e.to_string().contains("motif non précisé"), "{e}");
@@ -409,7 +433,9 @@ mod tests {
         assert_eq!(
             e,
             Error::HomeAssistant(
-                "recorder/import_statistics refusée : Invalid statistic_id (invalid_format)".into()
+                "recorder/import_statistics refusée par Home Assistant : Invalid statistic_id \
+                 (code invalid_format)"
+                    .into()
             )
         );
         let mut s =
@@ -417,7 +443,30 @@ mod tests {
         let e = s.command(json!({ "type": "x" })).unwrap_err();
         assert_eq!(
             e,
-            Error::HomeAssistant("x refusée : sans message (sans code)".into())
+            Error::HomeAssistant(
+                "x refusée par Home Assistant : sans message (code sans code)".into()
+            )
+        );
+    }
+
+    #[test]
+    fn refusal_text_is_shortened_and_admin_rights_are_suggested() {
+        let mut s = session(|msg| {
+            vec![json!({
+                "type": "result", "id": msg["id"], "success": false,
+                "error": { "code": "unauthorized", "message": "x".repeat(1000) }
+            })]
+        });
+        let e = s
+            .command(json!({ "type": "recorder/clear_statistics" }))
+            .unwrap_err();
+        let shown = e.to_string();
+        assert!(shown.len() < 400, "{shown}");
+        assert!(
+            shown.ends_with(
+                " (code unauthorized) ; l'utilisateur du jeton HA_TOKEN doit être administrateur"
+            ),
+            "{shown}"
         );
     }
 

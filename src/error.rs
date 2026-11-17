@@ -38,9 +38,9 @@ pub enum Error {
     Config(Vec<String>),
     /// Ligne de commande invalide.
     Usage(String),
-    /// Entrée-sortie (fichier, socket). Une connexion à Home Assistant
-    /// impossible le dit dès sa source (`ha::websocket::connect`) :
-    /// « Home Assistant injoignable (…) ».
+    /// Entrée-sortie (fichier, socket) : panne de réseau vers Home
+    /// Assistant, nommée par le client HA (« Home Assistant (hôte:port),
+    /// connexion TCP : connexion refusée »).
     Io(String),
     /// Transport HTTP vers GRDF (connexion, TLS, délai) : la cause et l'hôte
     /// visé (`grdf::http`), précédés de l'opération par le client GRDF.
@@ -170,15 +170,18 @@ impl fmt::Display for Error {
                 Ok(())
             }
             Error::Usage(m) => write!(f, "usage incorrect : {m}"),
-            Error::Io(m) => write!(f, "entrée-sortie : {m}"),
-            // Le message nomme déjà le service et l'opération (contexte).
-            Error::Http(m) | Error::Grdf(m) | Error::Protocol(m) => f.write_str(m),
-            Error::GrdfLogin(m) => f.write_str(m),
+            // Le message nomme déjà le service et l'opération (contexte,
+            // voir l'en-tête du module) : pas de préfixe technique.
+            Error::Io(m)
+            | Error::Http(m)
+            | Error::Grdf(m)
+            | Error::GrdfLogin(m)
+            | Error::HomeAssistant(m)
+            | Error::Protocol(m) => f.write_str(m),
             Error::GrdfCredentialsRejected(m) => write!(
                 f,
                 "{m} ; vérifiez GRDF_USERNAME et GRDF_PASSWORD (identifiants de Mon Espace GRDF)"
             ),
-            Error::HomeAssistant(m) => write!(f, "Home Assistant : {m}"),
             Error::Invalid(m) => write!(f, "valeur invalide : {m}"),
         }
     }
@@ -188,7 +191,7 @@ impl std::error::Error for Error {}
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
-        Error::Io(io_cause(&e))
+        Error::Io(format!("entrée-sortie : {}", io_cause(&e)))
     }
 }
 
@@ -223,10 +226,10 @@ mod tests {
             "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés ; vérifiez \
              GRDF_USERNAME et GRDF_PASSWORD (identifiants de Mon Espace GRDF)"
         );
-        assert_eq!(
-            Error::HomeAssistant("x".into()).to_string(),
-            "Home Assistant : x"
-        );
+        let ha = "Home Assistant (192.168.0.10:8123), authentification : jeton refusé";
+        assert_eq!(Error::HomeAssistant(ha.into()).to_string(), ha);
+        let io = "Home Assistant (192.168.0.10:8123), connexion TCP : connexion refusée";
+        assert_eq!(Error::Io(io.into()).to_string(), io);
     }
 
     #[test]
@@ -268,7 +271,10 @@ mod tests {
     #[test]
     fn from_io_error() {
         let io = io::Error::from(io::ErrorKind::ConnectionRefused);
-        assert_eq!(Error::from(io), Error::Io("connexion refusée".into()));
+        assert_eq!(
+            Error::from(io),
+            Error::Io("entrée-sortie : connexion refusée".into())
+        );
     }
 
     #[test]

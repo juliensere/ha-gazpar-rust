@@ -19,6 +19,7 @@
 //! [`HomeAssistantStore::connect`]), `domain`, `ports`, `secret`, `error`,
 //! `log`, `serde_json`, `jiff`.
 
+use std::fmt;
 use std::net::TcpStream;
 
 use jiff::Timestamp;
@@ -33,39 +34,110 @@ use crate::ha::session::{Session, Transport};
 use crate::ha::websocket::{self, Timeouts, WebSocket};
 use crate::ports::StatisticsStore;
 use crate::secret::Secret;
+use crate::url::Url;
 
 /// Nombre maximal de points par commande `recorder/import_statistics`.
 pub const IMPORT_BATCH_SIZE: usize = 500;
+
+/// Opération sur Home Assistant, nommée dans les erreurs avec la cible :
+/// « Home Assistant (192.168.0.10:8123), import de 9 points dans
+/// gazpar:12345678901234_energy ». La connexion TCP et la poignée de main
+/// sont nommées par [`websocket::connect`].
+#[derive(Debug, Clone, Copy)]
+enum Step<'a> {
+    Auth,
+    GetConfig,
+    Read {
+        id: &'a StatisticId,
+        from: Date,
+        to: Date,
+    },
+    Import {
+        id: &'a StatisticId,
+        count: usize,
+    },
+    Clear {
+        ids: &'a [StatisticId],
+    },
+    Close,
+}
+
+impl fmt::Display for Step<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Step::Auth => f.write_str("authentification"),
+            Step::GetConfig => f.write_str("lecture du fuseau horaire (get_config)"),
+            Step::Read { id, from, to } => write!(f, "lecture de {id} du {from} au {to}"),
+            Step::Import { id, count } => write!(f, "import de {count} points dans {id}"),
+            Step::Clear { ids } => {
+                let ids: Vec<&str> = ids.iter().map(StatisticId::as_str).collect();
+                write!(f, "effacement de {}", ids.join(", "))
+            }
+            Step::Close => f.write_str("fermeture de la connexion"),
+        }
+    }
+}
+
+/// Contexte complet d'une erreur : service, cible, opération.
+struct At<'a>(&'a str, Step<'a>);
+
+impl fmt::Display for At<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Home Assistant ({}), {}", self.0, self.1)
+    }
+}
 
 /// Statistiques de Home Assistant, lues et écrites par une session.
 pub struct HomeAssistantStore<T: Transport = WebSocket<TcpStream>> {
     session: Session<T>,
     tz: TimeZone,
+    /// Hôte et port de Home Assistant, nommés dans les erreurs.
+    target: String,
 }
 
 impl HomeAssistantStore {
     /// Se connecte à `url` (`ws://hôte:port/api/websocket`), s'authentifie
-    /// et lit le fuseau horaire de Home Assistant.
+    /// et lit le fuseau horaire de Home Assistant. Chaque erreur nomme
+    /// l'étape (connexion TCP, poignée de main, authentification,
+    /// `get_config`) et la cible.
     pub fn connect(url: &str, token: &Secret, timeouts: Timeouts) -> Result<Self, Error> {
         let ws = websocket::connect(url, timeouts)?;
-        HomeAssistantStore::open(Session::authenticate(ws, token)?)
+        let target = Url::ws(url)?.host_port();
+        let session =
+            Session::authenticate(ws, token).map_err(|e| e.context(At(&target, Step::Auth)))?;
+        debug!(
+            "Home Assistant ({target}) : authentifié, version {}",
+            session.ha_version()
+        );
+        HomeAssistantStore::open(session, target)
     }
 }
 
 impl<T: Transport> HomeAssistantStore<T> {
-    /// Sur une session authentifiée : lit le fuseau de HA (`get_config`).
-    pub(crate) fn open(mut session: Session<T>) -> Result<Self, Error> {
-        let tz = server::fetch_time_zone(&mut session)?;
+    /// Sur une session authentifiée auprès de `target` (hôte:port) : lit le
+    /// fuseau de HA (`get_config`).
+    pub(crate) fn open(mut session: Session<T>, target: String) -> Result<Self, Error> {
+        let tz = server::fetch_time_zone(&mut session)
+            .map_err(|e| e.context(At(&target, Step::GetConfig)))?;
         debug!(
             "fuseau horaire de Home Assistant : {}",
             tz.iana_name().unwrap_or("sans nom")
         );
-        Ok(HomeAssistantStore::new(session, tz))
+        Ok(HomeAssistantStore::new(session, tz, target))
     }
 
     /// Sur une session authentifiée, avec un fuseau déjà lu.
-    fn new(session: Session<T>, tz: TimeZone) -> Self {
-        HomeAssistantStore { session, tz }
+    fn new(session: Session<T>, tz: TimeZone, target: String) -> Self {
+        HomeAssistantStore {
+            session,
+            tz,
+            target,
+        }
+    }
+
+    /// Contexte d'une erreur de l'opération `step`, cible comprise.
+    fn during(&self, step: Step<'_>) -> String {
+        At(&self.target, step).to_string()
     }
 
     /// Fuseau des jours : celui de Home Assistant.
@@ -80,7 +152,8 @@ impl<T: Transport> HomeAssistantStore<T> {
 
     /// Ferme la connexion proprement.
     pub fn close(self) -> Result<(), Error> {
-        self.session.close()
+        let during = self.during(Step::Close);
+        self.session.close().map_err(|e| e.context(during))
     }
 }
 
@@ -94,12 +167,13 @@ impl<T: Transport> StatisticsStore for HomeAssistantStore<T> {
         if from > to {
             return Ok(Vec::new());
         }
-        let result = self
-            .session
-            .command(period_query(id, from, to, &self.tz)?)?;
-        let points = read_points(&result, id, from, to, &self.tz)?;
-        debug!("{id} : {} points lus du {from} au {to}", points.len());
-        Ok(points)
+        let during = self.during(Step::Read { id, from, to });
+        let result = period_query(id, from, to, &self.tz)
+            .and_then(|query| self.session.command(query))
+            .and_then(|result| read_points(&result, id, from, to, &self.tz))
+            .map_err(|e| e.context(during))?;
+        debug!("{id} : {} points lus du {from} au {to}", result.len());
+        Ok(result)
     }
 
     fn import(
@@ -108,9 +182,17 @@ impl<T: Transport> StatisticsStore for HomeAssistantStore<T> {
         measure: Measure,
         points: &[StatPoint],
     ) -> Result<(), Error> {
-        for command in import_commands(id, measure, points, &self.tz)? {
-            self.session.command(command)?;
-        }
+        let during = self.during(Step::Import {
+            id,
+            count: points.len(),
+        });
+        import_commands(id, measure, points, &self.tz)
+            .and_then(|commands| {
+                commands
+                    .into_iter()
+                    .try_for_each(|command| self.session.command(command).map(drop))
+            })
+            .map_err(|e| e.context(during))?;
         debug!("{id} : {} points importés", points.len());
         Ok(())
     }
@@ -119,12 +201,15 @@ impl<T: Transport> StatisticsStore for HomeAssistantStore<T> {
         if ids.is_empty() {
             return Ok(());
         }
-        let ids: Vec<&str> = ids.iter().map(StatisticId::as_str).collect();
-        self.session.command(json!({
-            "type": "recorder/clear_statistics",
-            "statistic_ids": ids,
-        }))?;
-        debug!("statistiques effacées : {}", ids.join(", "));
+        let during = self.during(Step::Clear { ids });
+        let names: Vec<&str> = ids.iter().map(StatisticId::as_str).collect();
+        self.session
+            .command(json!({
+                "type": "recorder/clear_statistics",
+                "statistic_ids": names,
+            }))
+            .map_err(|e| e.context(during))?;
+        debug!("statistiques effacées : {}", names.join(", "));
         Ok(())
     }
 }
@@ -258,7 +343,7 @@ fn quantity(value: &Value) -> Result<Option<Quantity>, Error> {
 }
 
 fn protocol(message: impl Into<String>) -> Error {
-    Error::Protocol(format!("Home Assistant : {}", message.into()))
+    Error::Protocol(format!("réponse inattendue : {}", message.into()))
 }
 
 #[cfg(test)]
@@ -288,7 +373,7 @@ mod tests {
     ) -> HomeAssistantStore<FakeTransport> {
         let session =
             Session::authenticate(FakeTransport::ha(respond), &Secret::new("jeton")).unwrap();
-        HomeAssistantStore::new(session, paris())
+        HomeAssistantStore::new(session, paris(), "ha.local:8123".into())
     }
 
     fn commands(store: &HomeAssistantStore<FakeTransport>) -> &[Value] {
@@ -517,7 +602,7 @@ mod tests {
             &Secret::new("jeton"),
         )
         .unwrap();
-        let mut s = HomeAssistantStore::open(session).unwrap();
+        let mut s = HomeAssistantStore::open(session, "ha.local:8123".into()).unwrap();
         assert_eq!(s.time_zone().iana_name(), Some("America/New_York"));
         assert_eq!(crate::ha::older_than_reference(s.ha_version()), Some(false));
         s.import(&energy(), Measure::Energy, &[point(date(2026, 7, 1), 1, 1)])
@@ -537,9 +622,17 @@ mod tests {
             &Secret::new("jeton"),
         )
         .unwrap();
-        match HomeAssistantStore::open(session) {
-            Err(Error::HomeAssistant(m)) => assert!(m.contains("Pas/Un_Fuseau"), "{m}"),
-            Err(e) => panic!("{e}"),
+        match HomeAssistantStore::open(session, "ha.local:8123".into()) {
+            Err(e) => assert_eq!(
+                e,
+                Error::HomeAssistant(
+                    "Home Assistant (ha.local:8123), lecture du fuseau horaire (get_config) : \
+                     fuseau horaire \"Pas/Un_Fuseau\" inconnu de ha-gazpar (réglage « Fuseau \
+                     horaire » de Home Assistant) : choisissez un fuseau IANA, par exemple \
+                     Europe/Paris"
+                        .into()
+                )
+            ),
             Ok(_) => panic!("fuseau inconnu accepté"),
         }
     }

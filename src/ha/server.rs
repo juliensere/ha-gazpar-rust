@@ -30,9 +30,7 @@ pub(crate) fn fetch_time_zone<T: Transport>(session: &mut Session<T>) -> Result<
 /// Fuseau de la réponse à `get_config` (champ `time_zone`, nom IANA).
 pub fn time_zone_from_config(config: &Value) -> Result<TimeZone, Error> {
     let Some(name) = config.get("time_zone").and_then(Value::as_str) else {
-        return Err(Error::Protocol(
-            "Home Assistant : get_config sans time_zone".into(),
-        ));
+        return Err(Error::Protocol("réponse sans time_zone".into()));
     };
     TimeZone::get(name).map_err(|_| {
         let shown: String = name.chars().take(MAX_NAME_CHARS).collect();

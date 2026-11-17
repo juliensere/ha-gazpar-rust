@@ -236,7 +236,7 @@ fn with_session<T>(
     if let Err(e) = session.close() {
         journal.log(
             Level::Warn,
-            &format!("fermeture de la connexion à Home Assistant : {e}"),
+            &format!("{e} ; sans conséquence sur ce qui a été fait"),
         );
     }
     result
@@ -315,6 +315,14 @@ mod tests {
     const PASSWORD: &str = "mot-de-passe-secret";
     const TOKEN: &str = "jeton-secret";
     const EMAIL: &str = "jean@example.org";
+    /// Jeton refusé, tel que le client Home Assistant le rend.
+    const TOKEN_REFUSED: &str = "Home Assistant (127.0.0.1:8123), authentification : jeton refusé \
+                                 (« Invalid access token or password »)";
+    /// Home Assistant injoignable, tel que le client Home Assistant le rend.
+    const HA_DOWN: &str = "Home Assistant (127.0.0.1:8123), connexion TCP : connexion refusée";
+    /// Échec de la fermeture, tel que le client Home Assistant le rend.
+    const CLOSE_FAILED: &str =
+        "Home Assistant (127.0.0.1:8123), fermeture de la connexion : connexion coupée";
     /// Refus d'identifiants, tel que le client GRDF le rend.
     const REJECTED: &str = "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés par \
                             GRDF (statut HTTP 401, connexion.grdf.fr:443)";
@@ -568,7 +576,7 @@ mod tests {
     #[test]
     fn check_fails_with_code_1_when_a_service_fails() {
         let mut connector = FakeConnector::new(Script {
-            ha_error: Some(Error::HomeAssistant("authentification refusée".into())),
+            ha_error: Some(Error::HomeAssistant(TOKEN_REFUSED.into())),
             ..Script::default()
         });
         let (code, out, err) =
@@ -579,7 +587,7 @@ mod tests {
             "le tableau est affiché d'abord : {out}"
         );
         assert!(
-            err.ends_with("ha-gazpar : Home Assistant : authentification refusée\n"),
+            err.ends_with(&format!("ha-gazpar : {TOKEN_REFUSED}\n")),
             "{err}"
         );
         assert_eq!(
@@ -656,14 +664,16 @@ mod tests {
     #[test]
     fn failed_close_of_home_assistant_is_not_fatal() {
         let mut connector = FakeConnector::new(Script {
-            close_error: Some(Error::Io("connexion coupée".into())),
+            close_error: Some(Error::Io(CLOSE_FAILED.into())),
             published: published(2),
             ..Script::default()
         });
         let (code, _, err) = launch_with(&["once"], valid_config, &mut connector, &mut Vec::new());
         assert_eq!(code, 0, "{err}");
         assert!(
-            err.contains(" ATTENTION fermeture de la connexion à Home Assistant : entrée-sortie : connexion coupée"),
+            err.contains(&format!(
+                " ATTENTION {CLOSE_FAILED} ; sans conséquence sur ce qui a été fait\n"
+            )),
             "{err}"
         );
         assert!(err.contains("relevé : 2 jours importés"), "{err}");
@@ -759,14 +769,16 @@ mod tests {
     #[test]
     fn run_does_not_contact_grdf_when_home_assistant_is_down() {
         let mut connector = FakeConnector::new(Script {
-            ha_error: Some(Error::Io("Home Assistant injoignable (refusé)".into())),
+            ha_error: Some(Error::Io(HA_DOWN.into())),
             ..Script::default()
         });
         let (code, _, err) = launch_with(&["run"], valid_config, &mut connector, &mut Vec::new());
         assert_eq!(code, 0);
         assert_eq!(
-            err.matches(" ATTENTION entrée-sortie : Home Assistant injoignable")
-                .count(),
+            err.matches(&format!(
+                " ATTENTION {HA_DOWN} ; nouvel essai au prochain relevé, dans 480 min\n"
+            ))
+            .count(),
             3,
             "{err}"
         );

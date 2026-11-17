@@ -125,7 +125,7 @@ fn check_accepts_valid_environment() {
     let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
     config_accepted(&out);
     assert!(
-        stderr.contains("ha-gazpar : entrée-sortie : Home Assistant injoignable ("),
+        stderr.contains("ha-gazpar : Home Assistant (127.0.0.1:1), connexion TCP : connexion refusée ; vérifiez HA_URL"),
         "{stderr}"
     );
     assert!(!stdout.contains("GRDF : connecté"), "{stdout}");
@@ -309,7 +309,8 @@ fn reset_with_yes_needs_home_assistant() {
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
     assert!(
-        text(&out.stderr).contains("Home Assistant injoignable"),
+        text(&out.stderr)
+            .contains("Home Assistant (127.0.0.1:1), connexion TCP : connexion refusée"),
         "{}",
         text(&out.stderr)
     );
@@ -376,7 +377,7 @@ fn once_with_home_assistant_unreachable_exits_1() {
     let stderr = text(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "{stderr}");
     assert!(
-        stderr.contains(" ERREUR entrée-sortie : Home Assistant injoignable ("),
+        stderr.contains(" ERREUR Home Assistant (127.0.0.1:1), connexion TCP : connexion refusée ; vérifiez HA_URL"),
         "{stderr}"
     );
     assert!(

@@ -318,8 +318,11 @@ Niveaux : `ERREUR`, `ATTENTION`, `INFO`, et `DEBUG` si `GAZPAR_LOG_LEVEL=debug`.
 | `GRDF, connexion k/5 (…)` suivi d'un autre motif (`service de connexion indisponible`, `stateToken introuvable`, `réponse inattendue d'Okta`…) | le parcours de connexion de GRDF a changé ou est en panne ; ce n'est pas un refus des identifiants | réessayé automatiquement au relevé suivant ; si cela dure, consultez les tickets du projet en citant la ligne (elle ne contient aucun secret) |
 | `connexion refusée`, `pas de réponse en 60 s`, `hôte introuvable par le DNS` après `GRDF, …` | réseau ou site GRDF indisponible | réessayé automatiquement au relevé suivant |
 | `le PCE … n'est pas rattaché à ce compte GRDF` | PCE mal recopié, ou compteur non rattaché au compte | comparez avec Mon Espace GRDF et corrigez `GRDF_PCE` |
-| `Home Assistant : authentification refusée` | jeton invalide ou révoqué, ou utilisateur non administrateur | créez un nouveau jeton avec un utilisateur administrateur |
-| `Home Assistant injoignable`, ou `délai dépassé sur la connexion WebSocket` | adresse ou port faux, HA arrêté ou surchargé | vérifiez `HA_URL` (`ws://`, port 8123 en général) |
+| `Home Assistant (…), authentification : jeton refusé` | jeton invalide ou révoqué | créez un nouveau jeton d'accès longue durée avec un utilisateur administrateur et mettez-le dans `HA_TOKEN` |
+| `… refusée par Home Assistant : … (code unauthorized)` | utilisateur du jeton non administrateur | utilisez le jeton d'un utilisateur administrateur |
+| `Home Assistant (…), connexion TCP : connexion refusée` (ou `délai de connexion … dépassé`, `hôte introuvable par le DNS`) | adresse ou port faux, HA arrêté ou en cours de redémarrage | vérifiez `HA_URL` (`ws://`, port 8123 en général) ; réessayé automatiquement au relevé suivant |
+| `Home Assistant (…), poignée de main WebSocket : réponse « HTTP/1.1 404 … »` | l'adresse ne mène pas à l'API WebSocket de Home Assistant (chemin, port d'un autre service, mandataire) | vérifiez `HA_URL` : `ws://hôte:8123/api/websocket` |
+| `pas de réponse dans le délai imparti` après `Home Assistant (…)` | Home Assistant surchargé ou bloqué | réessayé automatiquement au relevé suivant ; si cela dure, consultez le journal de Home Assistant |
 | `HA_URL … adresse invalide` (code 2) | adresse mal écrite | corrigez `HA_URL` : `ws://hôte:port`, sans `?` ni `#` |
 | rien dans le tableau de bord | délai de publication de GRDF, ou statistique non choisie | attendez 2 à 5 jours après la mise en service ; vérifiez [§6](#6-tableau-de-bord-énergie) |
 | un jour manquant | GRDF n'avait pas la valeur | rattrapé automatiquement s'il est dans la fenêtre de rattrapage ; sinon lancez une fois avec `--gazpar-overlap-days 60` |

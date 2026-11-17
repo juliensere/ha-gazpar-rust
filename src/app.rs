@@ -513,8 +513,15 @@ mod tests {
         // Port réservé, jamais en écoute pour un utilisateur ordinaire.
         config.ha_url = "ws://127.0.0.1:1/api/websocket".into();
         match Network.home_assistant(&config) {
-            Err(Error::Io(m)) => assert!(m.starts_with("Home Assistant injoignable ("), "{m}"),
-            Err(e) => panic!("{e}"),
+            Err(e) => assert_eq!(
+                e,
+                Error::Io(
+                    "Home Assistant (127.0.0.1:1), connexion TCP : connexion refusée ; vérifiez \
+                     HA_URL (hôte et port de Home Assistant, 8123 en général) et que Home \
+                     Assistant est démarré"
+                        .into()
+                )
+            ),
             Ok(_) => panic!("connexion inattendue"),
         }
     }

@@ -49,6 +49,14 @@ fn points(first: Date, count: i64) -> Vec<StatPoint> {
         .collect()
 }
 
+/// `127.0.0.1:port` du faux Home Assistant.
+fn host_port(ha: &FakeHa) -> String {
+    ha.url()
+        .trim_start_matches("ws://")
+        .trim_end_matches("/api/websocket")
+        .to_owned()
+}
+
 fn energy() -> StatisticId {
     StatisticId::parse("gazpar:12345678901234_energy").unwrap()
 }
@@ -140,10 +148,17 @@ fn wrong_token_is_refused_without_leaking_it() {
     let bad = "mauvais-jeton-secret";
     match connect(&ha, bad) {
         Err(e) => {
-            assert!(
-                matches!(&e, Error::HomeAssistant(m) if m.contains("Invalid access token")),
-                "{e}"
+            assert_eq!(
+                e.to_string(),
+                format!(
+                    "Home Assistant ({}), authentification : jeton refusé (« Invalid access \
+                     token or password ») ; créez un jeton d'accès longue durée (profil de \
+                     l'utilisateur dans Home Assistant, onglet Sécurité) et mettez-le dans \
+                     HA_TOKEN",
+                    host_port(&ha)
+                )
             );
+            assert!(matches!(e, Error::HomeAssistant(_)), "{e:?}");
             let shown = format!("{e} {e:?}");
             assert!(!shown.contains(bad), "{shown}");
         }
@@ -157,13 +172,55 @@ fn wrong_token_is_refused_without_leaking_it() {
 #[test]
 fn unreachable_home_assistant() {
     let ha = FakeHa::start(TOKEN);
-    let url = ha.url();
+    let (url, target) = (ha.url(), host_port(&ha));
     drop(ha);
     match HomeAssistantStore::connect(&url, &Secret::new(TOKEN), Timeouts::default()) {
-        Err(Error::Io(m)) => assert!(m.contains("impossible"), "{m}"),
-        Err(e) => panic!("{e}"),
+        Err(e) => {
+            assert_eq!(
+                e,
+                Error::Io(format!(
+                    "Home Assistant ({target}), connexion TCP : connexion refusée ; vérifiez \
+                     HA_URL (hôte et port de Home Assistant, 8123 en général) et que Home \
+                     Assistant est démarré"
+                ))
+            );
+            assert!(e.is_transient());
+        }
         Ok(_) => panic!("connexion inattendue"),
     }
+}
+
+#[test]
+fn address_that_is_not_home_assistant_is_named_in_the_handshake_step() {
+    // Un serveur web ordinaire répond 404 à la poignée de main.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = stream.read(&mut buf).unwrap();
+        stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+    });
+    let url = format!("ws://{addr}/mauvais/chemin?jeton=SECRET");
+    match HomeAssistantStore::connect(&url, &Secret::new(TOKEN), timeouts()) {
+        Err(e) => {
+            assert_eq!(
+                e,
+                Error::Protocol(format!(
+                    "Home Assistant ({addr}), poignée de main WebSocket : réponse « HTTP/1.1 404 \
+                     Not Found » au lieu de « HTTP/1.1 101 » : ce n'est pas l'API WebSocket de \
+                     Home Assistant ; vérifiez HA_URL (ws://hôte:8123/api/websocket)"
+                ))
+            );
+            assert!(!format!("{e:?}").contains("SECRET"));
+            assert!(!e.to_string().contains("/mauvais"));
+        }
+        Ok(_) => panic!("connexion inattendue"),
+    }
+    server.join().unwrap();
 }
 
 #[test]
@@ -203,11 +260,15 @@ fn days_follow_the_time_zone_of_home_assistant() {
 fn unknown_time_zone_of_home_assistant_is_a_clear_error() {
     let ha = FakeHa::start_with_time_zone(TOKEN, "Europe/Atlantide");
     match connect(&ha, TOKEN) {
-        Err(Error::HomeAssistant(m)) => {
-            assert!(m.contains("\"Europe/Atlantide\""), "{m}");
-            assert!(m.contains("inconnu"), "{m}");
-        }
-        Err(e) => panic!("{e}"),
+        Err(e) => assert_eq!(
+            e,
+            Error::HomeAssistant(format!(
+                "Home Assistant ({}), lecture du fuseau horaire (get_config) : fuseau horaire \
+                 \"Europe/Atlantide\" inconnu de ha-gazpar (réglage « Fuseau horaire » de Home \
+                 Assistant) : choisissez un fuseau IANA, par exemple Europe/Paris",
+                host_port(&ha)
+            ))
+        ),
         Ok(_) => panic!("fuseau inconnu accepté"),
     }
     // Aucune statistique n'a été lue ni écrite.
