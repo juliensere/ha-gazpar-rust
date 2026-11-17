@@ -61,7 +61,7 @@ use std::fmt;
 
 use serde_json::{Value, json};
 
-use super::http::{AllowedHosts, HttpClient, Response};
+use super::http::{AllowedHosts, HttpClient, Response, logged};
 use crate::error::Error;
 use crate::secret::{self, Secret};
 use crate::url::Url;
@@ -218,6 +218,17 @@ pub(crate) fn login(
         check_remediation(&identify_body, &format!("{login_url}{CHALLENGE_PATH}"))
     {
         warn!("{step} : {warning}");
+        let href = find_remediation(&identify_body, "challenge-authenticator")
+            .and_then(|c| c.get("href"))
+            .and_then(Value::as_str)
+            .and_then(|h| Url::http(h).ok());
+        let sent_to = login.resolve(CHALLENGE_PATH).ok();
+        let shown = |u: Option<&Url>| u.map_or("une adresse illisible".to_owned(), logged);
+        debug!(
+            "{step} : challenge-authenticator vise {}, mot de passe envoyé à {}",
+            shown(href.as_ref()),
+            shown(sent_to.as_ref())
+        );
     }
     let state_handle = read_state_handle(&identify_body)
         .map(Secret::new)
@@ -460,12 +471,17 @@ fn check_remediation(body: &Value, expected_href: &str) -> Option<String> {
         ));
     };
     let href = challenge.get("href").and_then(Value::as_str).unwrap_or("");
-    let shown = |h: &str| Url::http(h).map_or_else(|_| "illisible".to_owned(), |u| u.redacted());
-    (shown(href) != shown(expected_href)).then(|| {
+    let parsed = |h: &str| Url::http(h).ok();
+    let (offered, expected) = (parsed(href), parsed(expected_href));
+    let same = offered.as_ref().map(Url::redacted) == expected.as_ref().map(Url::redacted);
+    let target = |u: &Option<Url>| u.as_ref().map_or("illisible".to_owned(), Url::host_port);
+    (!same).then(|| {
         format!(
-            "l'étape « challenge-authenticator » vise {} au lieu de {}",
-            shown(href),
-            shown(expected_href)
+            "l'étape « challenge-authenticator » vise une autre adresse ({}) que celle où le mot \
+             de passe est envoyé ({}) : le parcours de connexion de GRDF a peut-être changé \
+             (chemins dans le journal debug)",
+            target(&offered),
+            target(&expected)
         )
     })
 }
@@ -688,8 +704,13 @@ mod tests {
             "https://connexion.grdf.fr/idp/idx/challenge/answer",
         )
         .unwrap();
-        assert!(w.contains("idp/idx/elsewhere"), "{w}");
-        assert!(!w.contains("SECRET"), "{w}");
+        assert_eq!(
+            w,
+            "l'étape « challenge-authenticator » vise une autre adresse (connexion.grdf.fr:443) \
+             que celle où le mot de passe est envoyé (connexion.grdf.fr:443) : le parcours de \
+             connexion de GRDF a peut-être changé (chemins dans le journal debug)"
+        );
+        assert!(!w.contains("SECRET") && !w.contains("/idp"), "{w}");
     }
 
     // --- Réponse au mot de passe ---

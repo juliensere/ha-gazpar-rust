@@ -163,7 +163,7 @@ impl<T: Transport> Session<T> {
 fn receive<T: Transport>(transport: &mut T) -> Result<Value, Error> {
     let text = transport
         .recv_text()?
-        .ok_or_else(|| Error::HomeAssistant("connexion fermée par Home Assistant".into()))?;
+        .ok_or_else(|| Error::HomeAssistant("connexion fermée par le serveur".into()))?;
     // L'erreur de serde_json donne la position, jamais le contenu.
     serde_json::from_str(&text).map_err(|e| Error::Protocol(format!("message JSON invalide ({e})")))
 }
@@ -350,7 +350,7 @@ mod tests {
         let e = auth_failure(required(), vec![]);
         assert_eq!(
             e,
-            Error::HomeAssistant("connexion fermée par Home Assistant".into())
+            Error::HomeAssistant("connexion fermée par le serveur".into())
         );
         let e = auth_failure(vec![], vec![]);
         assert!(matches!(e, Error::HomeAssistant(_)));
@@ -475,7 +475,7 @@ mod tests {
         let e = s.command(json!({ "type": "x" })).unwrap_err();
         assert_eq!(
             e,
-            Error::HomeAssistant("connexion fermée par Home Assistant".into())
+            Error::HomeAssistant("connexion fermée par le serveur".into())
         );
     }
 

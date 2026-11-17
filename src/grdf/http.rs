@@ -5,7 +5,9 @@
 //! - corps de réponse borné à [`MAX_BODY_BYTES`], lu en UTF-8 (avec
 //!   remplacement des octets invalides) ;
 //! - statuts HTTP rendus tels quels, jamais transformés en erreur ; une
-//!   panne de transport devient [`Error::Http`] « GRDF injoignable (…) » ;
+//!   panne de transport devient [`Error::Http`], cause en français suivie de
+//!   l'hôte et du port visés (« pas de réponse en 60 s
+//!   (connexion.grdf.fr:443) ») ;
 //! - redirections **suivies à la main** (301, 302, 303, 307, 308 ; 303, et
 //!   301/302 sur un POST, deviennent un GET sans corps), au plus
 //!   [`MAX_REDIRECTS`] sauts, pour lire `Set-Cookie` à chaque saut et
@@ -176,10 +178,27 @@ impl fmt::Display for Method {
 
 /// Longueur maximale d'un chemin repris dans le journal.
 const MAX_LOGGED_PATH: usize = 120;
+/// Au-delà, un segment de chemin est masqué : il peut s'agir d'un jeton.
+const MAX_LOGGED_SEGMENT: usize = 40;
 
-/// Hôte, port et chemin d'une adresse, sans la requête : forme journalisée.
-fn logged(url: &Url) -> String {
-    let path: String = url.path().chars().take(MAX_LOGGED_PATH).collect();
+/// Hôte, port et chemin d'une adresse, sans la requête : forme journalisée
+/// (`connexion.grdf.fr:443/idp/idx/identify`). Un segment de chemin qui
+/// pourrait porter un jeton (plus de [`MAX_LOGGED_SEGMENT`] caractères, ou
+/// forme `NN.id.…` des jetons d'Okta) devient `…` : le parcours réel de GRDF
+/// n'a jamais été observé, ses chemins ne sont donc pas présumés sûrs.
+pub(crate) fn logged(url: &Url) -> String {
+    let path: Vec<&str> = url
+        .path()
+        .split('/')
+        .map(|segment| {
+            if segment.chars().count() > MAX_LOGGED_SEGMENT || segment.contains(".id.") {
+                "…"
+            } else {
+                segment
+            }
+        })
+        .collect();
+    let path: String = path.join("/").chars().take(MAX_LOGGED_PATH).collect();
     format!("{}{path}", url.host_port())
 }
 
@@ -970,6 +989,30 @@ mod tests {
         assert_eq!(seen[0].header("cookie"), Some("ln=jean@example.org"));
         assert_eq!(seen[1].header("cookie"), Some("ln=jean@example.org"));
         assert!(!format!("{client:?}").contains("jean"));
+    }
+
+    #[test]
+    fn logged_form_has_no_query_and_masks_token_like_segments() {
+        let logged = |s: &str| logged(&Url::http(s).unwrap());
+        assert_eq!(
+            logged("https://connexion.grdf.fr/oauth2/aus5y2ta2uEHjCWIR417/v1/authorize?code=X"),
+            "connexion.grdf.fr:443/oauth2/aus5y2ta2uEHjCWIR417/v1/authorize"
+        );
+        assert_eq!(
+            logged("https://connexion.grdf.fr/x/02.id.SECRET/y"),
+            "connexion.grdf.fr:443/x/…/y"
+        );
+        let long = "a".repeat(41);
+        assert_eq!(
+            logged(&format!("https://h.fr/session/{long}/fin")),
+            "h.fr:443/session/…/fin"
+        );
+        assert_eq!(logged("http://127.0.0.1:4000/"), "127.0.0.1:4000/");
+        let deep = format!("https://h.fr/{}", "abc/".repeat(100));
+        assert_eq!(
+            logged(&deep).chars().count(),
+            "h.fr:443".len() + MAX_LOGGED_PATH
+        );
     }
 
     #[test]
