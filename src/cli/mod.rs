@@ -154,7 +154,12 @@ fn execute(
         Command::Once => match reading(services, &config, &mut journal) {
             Ok(_) => Ok(0),
             Err(e) => {
-                journal.log(Level::Error, &e.to_string());
+                let advice = if e.is_transient() {
+                    " ; panne passagère, relancez plus tard"
+                } else {
+                    ""
+                };
+                journal.log(Level::Error, &format!("{e}{advice}"));
                 Ok(e.exit_code())
             }
         },
@@ -655,7 +660,9 @@ mod tests {
         assert_eq!(code, 1);
         assert!(out.is_empty());
         assert!(
-            err.trim_end().ends_with(&format!(" ERREUR {TIMEOUT}")),
+            err.trim_end().ends_with(&format!(
+                " ERREUR {TIMEOUT} ; panne passagère, relancez plus tard"
+            )),
             "{err}"
         );
         assert_eq!(connector.seen.borrow().ha_closes, 1);
@@ -736,7 +743,7 @@ mod tests {
         assert_eq!(sleeps, [Duration::from_secs(3600); 3]);
         assert!(
             err.contains(&format!(
-                " ATTENTION {TIMEOUT} ; nouvel essai au prochain relevé, dans 60 min"
+                " ATTENTION {TIMEOUT} ; panne passagère, nouvel essai au prochain relevé, dans 60 min"
             )),
             "{err}"
         );
@@ -776,7 +783,8 @@ mod tests {
         assert_eq!(code, 0);
         assert_eq!(
             err.matches(&format!(
-                " ATTENTION {HA_DOWN} ; nouvel essai au prochain relevé, dans 480 min\n"
+                " ATTENTION {HA_DOWN} ; panne passagère, nouvel essai au prochain relevé, dans \
+                 480 min\n"
             ))
             .count(),
             3,

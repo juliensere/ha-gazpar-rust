@@ -539,8 +539,10 @@ fn secrets_never_reach_logs_or_errors() {
     for expected in [
         " DEBUG GRDF, connexion 4/5 (mot de passe Okta)",
         " INFO connecté à Mon Espace GRDF",
-        " ATTENTION GRDF, relevés du 2021-07-26 au 2021-08-22 : session GRDF expirée",
-        " ATTENTION GRDF, relevés du 2021-07-26 au 2021-08-22 : débit limité par GRDF",
+        " ATTENTION GRDF, relevés du 2021-07-26 au 2021-08-22 : session expirée (statut HTTP \
+         401, ",
+        " ATTENTION GRDF, relevés du 2021-07-26 au 2021-08-22 : tentative 2/4 échouée, débit \
+         limité par GRDF (statut HTTP 429, ",
         "ERREUR mot de passe",
         "ERREUR session",
         "ERREUR pce",

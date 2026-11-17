@@ -59,12 +59,14 @@ pub fn run(host: &mut dyn Host, interval: Duration, max_cycles: Option<u64>) {
                     );
                     rejected = Some(reason);
                 }
+                Err(e) if e.is_transient() => host.log(
+                    Level::Warn,
+                    &format!(
+                        "{e} ; panne passagère, nouvel essai au prochain relevé, dans {minutes} min"
+                    ),
+                ),
                 Err(e) => host.log(
-                    if e.is_transient() {
-                        Level::Warn
-                    } else {
-                        Level::Error
-                    },
+                    Level::Error,
                     &format!("{e} ; nouvel essai au prochain relevé, dans {minutes} min"),
                 ),
             },
@@ -195,7 +197,8 @@ mod tests {
         assert_eq!(
             host.logs(Level::Warn),
             ["GRDF, connexion 1/5 (page d'accueil) : connexion refusée \
-                 (monespace.grdf.fr:443) ; nouvel essai au prochain relevé, dans 480 min"]
+                 (monespace.grdf.fr:443) ; panne passagère, nouvel essai au prochain relevé, \
+                 dans 480 min"]
         );
         assert!(host.logs(Level::Error).is_empty());
     }

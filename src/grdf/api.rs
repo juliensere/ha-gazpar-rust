@@ -205,17 +205,13 @@ impl GrdfClient {
                 Decision::Accept => {
                     return outcome;
                 }
-                Decision::Relogin => {
-                    warn!("{call} : session GRDF expirée, reconnexion (une seule fois)");
+                Decision::Relogin { reason } => {
+                    warn!("{call} : {reason} ; reconnexion à GRDF (une seule par appel)");
                     logged_in_again = true;
                     self.login()?;
                 }
                 Decision::Retry { delay, reason } => {
-                    warn!(
-                        "{call} : {reason} ; nouvel essai dans {} s ({} restant(s))",
-                        delay.as_secs_f64(),
-                        MAX_ATTEMPTS - attempt
-                    );
+                    warn!("{}", retry_line(call, attempt, &reason, delay));
                     (self.sleep)(delay);
                     attempt += 1;
                 }
@@ -338,8 +334,14 @@ fn is_session_expired(response: &Response, api_prefix: &str) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 enum Decision {
     Accept,
-    Relogin,
-    Retry { delay: Duration, reason: String },
+    /// Session expirée : reconnexion, avec le signe qui l'a montré.
+    Relogin {
+        reason: String,
+    },
+    Retry {
+        delay: Duration,
+        reason: String,
+    },
     Fail(Error),
 }
 
@@ -380,7 +382,9 @@ fn decide(
                 expiry_sign(response)
             )))
         } else {
-            Decision::Relogin
+            Decision::Relogin {
+                reason: format!("session expirée ({}, {target})", expiry_sign(response)),
+            }
         };
     }
     if response.status == 429 {
@@ -407,6 +411,24 @@ fn decide(
         )));
     }
     Decision::Accept
+}
+
+/// Ligne de journal d'une reprise : l'appel, la tentative échouée sur
+/// [`MAX_ATTEMPTS`], le motif et le délai avant la suivante.
+fn retry_line(call: Call, attempt: u32, reason: &str, delay: Duration) -> String {
+    format!(
+        "{call} : tentative {attempt}/{MAX_ATTEMPTS} échouée, {reason} ; nouvel essai dans {}",
+        seconds(delay)
+    )
+}
+
+/// Délai lisible : « 3 s », « 1,5 s ».
+fn seconds(delay: Duration) -> String {
+    if delay.subsec_millis() == 0 {
+        format!("{} s", delay.as_secs())
+    } else {
+        format!("{:.1} s", delay.as_secs_f64()).replace('.', ",")
+    }
 }
 
 /// Signe d'une session expirée, pour un message.
@@ -522,7 +544,8 @@ mod tests {
             response(200, "text/html", "https://monespace.grdf.fr/"),
         ] {
             let outcome = Ok(expired);
-            assert_eq!(decide(&outcome, PREFIX, 1, false), Decision::Relogin);
+            assert!(matches!(decide(&outcome, PREFIX, 1, false),
+                    Decision::Relogin { reason } if reason.starts_with("session expirée (")),);
             let again = decide(&outcome, PREFIX, 1, true);
             assert!(
                 matches!(&again, Decision::Fail(Error::GrdfLogin(m))
@@ -618,6 +641,57 @@ mod tests {
                 "pas de réponse en 60 s (monespace.grdf.fr:443) ; abandon après 4 tentatives"
                     .into()
             ))
+        );
+    }
+
+    #[test]
+    fn retry_lines_say_attempt_reason_and_delay() {
+        let call = Call::Readings {
+            from: date(2026, 10, 18),
+            to: date(2026, 11, 16),
+            index: 1,
+            count: 1,
+        };
+        assert_eq!(
+            retry_line(
+                call,
+                1,
+                "pas de réponse en 60 s (monespace.grdf.fr:443)",
+                Duration::from_secs(3)
+            ),
+            "GRDF, relevés du 2026-10-18 au 2026-11-16 : tentative 1/4 échouée, pas de réponse \
+             en 60 s (monespace.grdf.fr:443) ; nouvel essai dans 3 s"
+        );
+        assert_eq!(
+            retry_line(
+                Call::PceList,
+                3,
+                "débit limité par GRDF (statut HTTP 429, Retry-After « 1.5 », \
+                 monespace.grdf.fr:443)",
+                Duration::from_millis(1500)
+            ),
+            "GRDF, liste des PCE : tentative 3/4 échouée, débit limité par GRDF (statut HTTP \
+             429, Retry-After « 1.5 », monespace.grdf.fr:443) ; nouvel essai dans 1,5 s"
+        );
+        let expired = Ok(response(401, "application/json", PREFIX));
+        assert_eq!(
+            decide(&expired, PREFIX, 1, false),
+            Decision::Relogin {
+                reason: "session expirée (statut HTTP 401, monespace.grdf.fr:443)".into()
+            }
+        );
+        let login_page = Ok(response(
+            200,
+            "text/html",
+            "https://connexion.grdf.fr/login",
+        ));
+        assert_eq!(
+            decide(&login_page, PREFIX, 1, false),
+            Decision::Relogin {
+                reason: "session expirée (page HTML hors de l'API, statut HTTP 200, \
+                         connexion.grdf.fr:443)"
+                    .into()
+            }
         );
     }
 

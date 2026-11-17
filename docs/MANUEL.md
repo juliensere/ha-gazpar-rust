@@ -299,8 +299,21 @@ Le journal est écrit sur la sortie d'erreur (`docker logs`), une ligne par év�
 
 ```
 2026-11-16T07:00:02Z INFO relevé : 3 jours importés, dernier jour connu 2026-11-13
-2026-11-16T15:00:01Z ATTENTION HTTP : GRDF injoignable (délai dépassé) ; nouvel essai au prochain relevé, dans 480 min
+2026-11-16T15:00:01Z ATTENTION GRDF, relevés du 2026-11-02 au 2026-11-15 : tentative 1/4 échouée, pas de réponse en 60 s (monespace.grdf.fr:443) ; nouvel essai dans 3 s
+2026-11-16T15:01:02Z ATTENTION GRDF, relevés du 2026-11-02 au 2026-11-15 : pas de réponse en 60 s (monespace.grdf.fr:443) ; abandon après 4 tentatives ; panne passagère, nouvel essai au prochain relevé, dans 480 min
 ```
+
+Une ligne d'erreur se lit de gauche à droite :
+
+```
+<service>, <opération> : <cause> (<hôte:port>) ; <que faire>
+```
+
+- le **service** et l'**opération** : `GRDF, connexion 3/5 (identification Okta)` (les cinq étapes de la connexion vont de 1/5, page d'accueil, à 5/5, fin de connexion), `GRDF, liste des PCE`, `GRDF, relevés du … au …`, `Home Assistant (192.168.0.10:8123), connexion TCP`, `… poignée de main WebSocket`, `… authentification`, `… import de 9 points dans gazpar:…_energy`… ;
+- la **cause** : statut HTTP, délai dépassé, connexion refusée, motif donné par Okta (texte entre guillemets, code entre crochets) ou par Home Assistant ; avec l'hôte et le port qui ont répondu, jamais l'adresse complète ;
+- **que faire**, quand vous pouvez agir : vérifier `HA_URL`, recréer le jeton, vérifier les identifiants GRDF ou `GRDF_PCE`. Une panne passagère (réseau, service indisponible) le dit : `panne passagère, nouvel essai au prochain relevé, dans 480 min`.
+
+Les appels à GRDF en échec passager sont repris aussitôt, 4 tentatives au plus, chacune journalisée en `ATTENTION` avec son numéro, son motif et le délai avant la suivante (3, 6, 12 s, ou le délai `Retry-After` demandé par GRDF, 60 s au plus).
 
 Niveaux : `ERREUR`, `ATTENTION`, `INFO`, et `DEBUG` si `GAZPAR_LOG_LEVEL=debug`. **Aucun niveau** n'écrit le mot de passe, le jeton, les cookies ni l'e-mail du compte.
 
