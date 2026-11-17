@@ -105,7 +105,7 @@ test-ha: ha-up ## Essais réels contre le Home Assistant jetable
 	HA_TEST_TAG=$(HA_TAG) \
 	$(CARGO) test --locked --test ha_real -- --ignored --test-threads=1
 
-dev: ## check puis once deux fois, contre les faux GRDF et HA (127.0.0.1)
+dev: ## check, once (info puis debug), une panne par famille, contre les faux GRDF et HA (127.0.0.1)
 	$(CARGO) test --locked --test commands -- --ignored --exact demo --nocapture
 
 # Image Docker (Dockerfile). Rien n'est poussé : la publication est faite par

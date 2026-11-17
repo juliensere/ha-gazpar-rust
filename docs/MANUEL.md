@@ -315,7 +315,23 @@ Une ligne d'erreur se lit de gauche à droite :
 
 Les appels à GRDF en échec passager sont repris aussitôt, 4 tentatives au plus, chacune journalisée en `ATTENTION` avec son numéro, son motif et le délai avant la suivante (3, 6, 12 s, ou le délai `Retry-After` demandé par GRDF, 60 s au plus).
 
-Niveaux : `ERREUR`, `ATTENTION`, `INFO`, et `DEBUG` si `GAZPAR_LOG_LEVEL=debug`. **Aucun niveau** n'écrit le mot de passe, le jeton, les cookies ni l'e-mail du compte.
+Niveaux : `ERREUR`, `ATTENTION`, `INFO`, et `DEBUG` si `GAZPAR_LOG_LEVEL=debug`. **Aucun niveau** n'écrit le mot de passe, le jeton, les valeurs des cookies, les jetons de connexion ni l'e-mail du compte.
+
+Au niveau `DEBUG`, le journal détaille aussi chaque échange, de quoi diagnostiquer une connexion à GRDF qui échoue (vous pouvez joindre ces lignes à un ticket : elles ne contiennent aucun secret) :
+
+```
+DEBUG GRDF, connexion 1/5 (page d'accueil)
+DEBUG GRDF : GET monespace.grdf.fr:443/ → 302 en 85 ms (cookies envoyés : aucun)
+DEBUG GRDF : redirection 302 vers connexion.grdf.fr:443/oauth2/…/v1/authorize (saut 1/10)
+DEBUG GRDF : cookie reçu de connexion.grdf.fr : DT (hôte connexion.grdf.fr seul, chemin /, Secure)
+DEBUG GRDF, connexion 3/5 (identification Okta) : statut 200, étapes proposées : challenge-authenticator, select-authenticator-authenticate
+DEBUG GRDF, relevés du 2026-11-03 au 2026-11-16 : 10 jours reçus, du 2026-11-05 au 2026-11-14, dont 1 sans valeur ; aucun relevé pour dateFin
+```
+
+- chaque requête : méthode, hôte et port, chemin **sans** les paramètres, statut (ou cause de l'échec), durée, noms des cookies envoyés ;
+- chaque redirection, avec l'hôte visé ; chaque cookie reçu, avec son domaine, ou le motif pour lequel il a été ignoré ;
+- l'étape de connexion atteinte et les étapes proposées par Okta ;
+- pour chaque fenêtre de relevés : les dates demandées, le nombre de jours reçus, le premier et le dernier.
 
 | Code | Signification |
 |---|---|

@@ -16,7 +16,10 @@
 //! - envoi : chemins les plus longs d'abord, puis ordre d'arrivée.
 //!
 //! Les valeurs sont des secrets (session, e-mail du cookie `ln`) : `Debug`
-//! ne montre que les noms. L'heure est passée en paramètre pour les tests.
+//! ne montre que les noms, et [`CookieJar::store`] rend ce qu'il a fait d'un
+//! `Set-Cookie` ([`Stored`] : nom, domaine, chemin, ou motif du refus) pour
+//! le journal de diagnostic, sans la valeur. L'heure est passée en
+//! paramètre pour les tests.
 //!
 //! Fonctions pures. Dépendances : `url`, `jiff`.
 
@@ -60,6 +63,59 @@ impl Cookie {
     }
 }
 
+/// Longueur maximale d'un nom de cookie repris dans le journal.
+const MAX_NAME_CHARS: usize = 64;
+
+/// Ce qu'est devenu un `Set-Cookie` reçu : de quoi diagnostiquer les
+/// domaines des cookies entre les hôtes de GRDF, **jamais la valeur**.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stored {
+    /// Enregistré, ou remplace le cookie de même nom, domaine et chemin.
+    Kept {
+        name: String,
+        domain: String,
+        /// Renvoyé seulement à cet hôte (pas d'attribut `Domain`).
+        host_only: bool,
+        path: String,
+        secure: bool,
+    },
+    /// Date dépassée : le cookie de même clé est supprimé.
+    Expired { name: String },
+    /// Ignoré, avec le motif.
+    Rejected {
+        name: Option<String>,
+        reason: String,
+    },
+}
+
+impl fmt::Display for Stored {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let short = |name: &str| name.chars().take(MAX_NAME_CHARS).collect::<String>();
+        match self {
+            Stored::Kept {
+                name,
+                domain,
+                host_only,
+                path,
+                secure,
+            } => {
+                let scope = if *host_only {
+                    format!("hôte {domain} seul")
+                } else {
+                    format!("domaine {domain} et sous-domaines")
+                };
+                let secure = if *secure { ", Secure" } else { "" };
+                write!(f, "{} ({scope}, chemin {path}{secure})", short(name))
+            }
+            Stored::Expired { name } => write!(f, "{} supprimé (expiré)", short(name)),
+            Stored::Rejected { name, reason } => match name {
+                Some(name) => write!(f, "{} ignoré : {reason}", short(name)),
+                None => write!(f, "en-tête ignoré : {reason}"),
+            },
+        }
+    }
+}
+
 /// Cookies de la session HTTP.
 #[derive(Clone, Default)]
 pub struct CookieJar {
@@ -82,10 +138,15 @@ impl CookieJar {
     }
 
     /// Enregistre un en-tête `Set-Cookie` reçu en réponse à `url`. Un
-    /// en-tête invalide est ignoré sans bruit, comme le ferait un navigateur.
-    pub fn store(&mut self, set_cookie: &str, url: &Url, now: Timestamp) {
-        if let Some(cookie) = parse_set_cookie(set_cookie, url, now) {
-            self.put(cookie, now);
+    /// en-tête invalide est ignoré, comme le ferait un navigateur ; le
+    /// résultat dit ce qui a été fait, pour le journal.
+    pub fn store(&mut self, set_cookie: &str, url: &Url, now: Timestamp) -> Stored {
+        match parse_set_cookie(set_cookie, url, now) {
+            Ok(cookie) => self.put(cookie, now),
+            Err(reason) => Stored::Rejected {
+                name: cookie_name(set_cookie),
+                reason,
+            },
         }
     }
 
@@ -104,11 +165,26 @@ impl CookieJar {
         self.put(cookie, Timestamp::MIN);
     }
 
-    fn put(&mut self, cookie: Cookie, now: Timestamp) {
+    fn put(&mut self, cookie: Cookie, now: Timestamp) -> Stored {
         self.cookies.retain(|c| !c.same_key(&cookie));
-        if !cookie.expired(now) && self.cookies.len() < MAX_COOKIES {
-            self.cookies.push(cookie);
+        if cookie.expired(now) {
+            return Stored::Expired { name: cookie.name };
         }
+        if self.cookies.len() >= MAX_COOKIES {
+            return Stored::Rejected {
+                name: Some(cookie.name),
+                reason: format!("plus de {MAX_COOKIES} cookies"),
+            };
+        }
+        let stored = Stored::Kept {
+            name: cookie.name.clone(),
+            domain: cookie.domain.clone(),
+            host_only: cookie.host_only,
+            path: cookie.path.clone(),
+            secure: cookie.secure,
+        };
+        self.cookies.push(cookie);
+        stored
     }
 
     /// Valeur de l'en-tête `Cookie` pour une requête vers `url`, ou `None`.
@@ -139,15 +215,25 @@ impl fmt::Debug for CookieJar {
     }
 }
 
-fn parse_set_cookie(header: &str, url: &Url, now: Timestamp) -> Option<Cookie> {
+/// Nom d'un `Set-Cookie`, s'il se lit (pour le journal).
+fn cookie_name(header: &str) -> Option<String> {
+    let (name, _) = header.split(';').next()?.split_once('=')?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.chars().take(MAX_NAME_CHARS).collect())
+}
+
+/// Cookie d'un `Set-Cookie`, ou le motif du refus (sans la valeur).
+fn parse_set_cookie(header: &str, url: &Url, now: Timestamp) -> Result<Cookie, String> {
     if header.len() > MAX_COOKIE_LEN {
-        return None;
+        return Err(format!("plus de {MAX_COOKIE_LEN} octets"));
     }
     let mut parts = header.split(';');
-    let (name, value) = parts.next()?.split_once('=')?;
+    let Some((name, value)) = parts.next().and_then(|p| p.split_once('=')) else {
+        return Err("pas de paire nom=valeur".to_owned());
+    };
     let (name, value) = (name.trim(), value.trim());
     if name.is_empty() {
-        return None;
+        return Err("nom vide".to_owned());
     }
 
     let mut domain: Option<String> = None;
@@ -175,10 +261,16 @@ fn parse_set_cookie(header: &str, url: &Url, now: Timestamp) -> Option<Cookie> {
     let (domain, host_only) = match domain {
         Some(d) if d == url.host() => (d, false),
         Some(d) if d.contains('.') && domain_match(url.host(), &d) => (d, false),
-        Some(_) => return None,
+        Some(d) => {
+            let d: String = d.chars().take(MAX_NAME_CHARS).collect();
+            return Err(format!(
+                "domaine {d} refusé pour un cookie posé par {}",
+                url.host()
+            ));
+        }
         None => (url.host().to_owned(), true),
     };
-    Some(Cookie {
+    Ok(Cookie {
         name: name.to_owned(),
         value: value.to_owned(),
         domain,
@@ -318,6 +410,47 @@ mod tests {
 
     fn header(jar: &mut CookieJar, to: &str) -> Option<String> {
         jar.header(&url(to), now())
+    }
+
+    // --- Compte rendu pour le journal (jamais la valeur) ---
+
+    #[test]
+    fn store_reports_name_scope_and_never_the_value() {
+        let mut jar = CookieJar::new();
+        let from = url("https://connexion.grdf.fr/idp/idx/identify");
+        let kept = jar.store("DT=SECRET-DT; Path=/; HttpOnly; Secure", &from, now());
+        assert_eq!(
+            kept.to_string(),
+            "DT (hôte connexion.grdf.fr seul, chemin /, Secure)"
+        );
+        let wide = jar.store("JSESSIONID=SECRET; Domain=.grdf.fr", &from, now());
+        assert_eq!(
+            wide.to_string(),
+            "JSESSIONID (domaine grdf.fr et sous-domaines, chemin /idp/idx)"
+        );
+        let expired = jar.store("DT=; Max-Age=0", &from, now());
+        assert_eq!(expired.to_string(), "DT supprimé (expiré)");
+        let foreign = jar.store("x=SECRET; Domain=example.org", &from, now());
+        assert_eq!(
+            foreign.to_string(),
+            "x ignoré : domaine example.org refusé pour un cookie posé par connexion.grdf.fr"
+        );
+        assert_eq!(
+            jar.store("SECRET-sans-egal", &from, now()).to_string(),
+            "en-tête ignoré : pas de paire nom=valeur"
+        );
+        assert_eq!(
+            jar.store("=SECRET", &from, now()).to_string(),
+            "en-tête ignoré : nom vide"
+        );
+        let long = format!("big={}", "v".repeat(5000));
+        assert_eq!(
+            jar.store(&long, &from, now()).to_string(),
+            "big ignoré : plus de 4096 octets"
+        );
+        for stored in [kept, wide, expired, foreign] {
+            assert!(!format!("{stored} {stored:?}").contains("SECRET"));
+        }
     }
 
     // --- Lecture de Set-Cookie ---

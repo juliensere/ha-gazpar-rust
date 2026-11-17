@@ -85,7 +85,7 @@ Total attendu : environ 30 crates (quelques-unes sont partagées), à figer à l
 | WebSocket vers HA | `tungstenite` 0.30 : 27 crates | client RFC 6455 minimal maison (≈ 600 lignes hors tests avec SHA-1, base64 et rôle serveur pour les tests, mesuré) : poignée de main, trames texte masquées, fragmentation, ping/pong, fermeture. Norme figée depuis 2011, pair de confiance (son propre HA). `ws://` uniquement ; si `wss://` devient nécessaire, repasser à `tungstenite` |
 | Configuration | `clap`, YAML/TOML | variables d'environnement lues avec `std::env` |
 | Journal | `log` + backend | `eprintln!` horodaté, niveaux `info`/`debug` ; pas de fichier, Docker s'en charge |
-| Erreurs | `anyhow`, `thiserror` | un `enum Error` |
+| Erreurs | `anyhow`, `thiserror` | un `enum Error` ; le contexte (étape, cible) est préfixé au message par `Error::context`, sans changer de variante |
 | Extraction de `stateToken` | `regex` | recherche de sous-chaîne |
 
 Le WebSocket ne peut pas être évité : sur HA 2026.9.1, l'API REST expose bien l'action `recorder.get_statistics`, mais l'import de statistiques n'existe que par WebSocket (vérifié sur `/api/services`).
@@ -152,14 +152,16 @@ src/
   config_file.rs   analyse du fichier NOM=valeur (fonction pure)
   url.rs           seul analyseur d'adresse (http, https, ws), partagé par config, grdf et ha
   secret.rs        type Secret (Debug et Display masqués), expurgation des textes
-  error.rs         enum Error, code de sortie, is_transient (erreur passagère ou définitive)
+  error.rs         enum Error, code de sortie, is_transient (erreur passagère ou définitive),
+                   contexte (« <service>, <opération> : <cause> (<hôte:port>) ; <que faire> »)
   log.rs           journal horodaté sur stderr
   domain.rs        types du métier, sans entrée-sortie : Quantity (millièmes), DailyReading, StatPoint, StatisticId, Measure
   ports.rs         traits aux frontières : ConsumptionSource, StatisticsStore (pas de trait d'horloge : la date du jour est un paramètre)
   sync.rs          algorithme d'un relevé (§3), ne dépend que de domain, ports et error
   readings.rs      relevés GRDF (JSON) → DailyReading (fonction pure)
   grdf/            implémente ConsumptionSource
-    http.rs        seul module qui importe ureq : transport, redirections, liste blanche des hôtes
+    http.rs        seul module qui importe ureq : transport, redirections, liste blanche des hôtes,
+                   journal debug de chaque requête, redirection et cookie (noms seulement)
     cookies.rs     bocal à cookies (RFC 6265 simplifiée)
     auth.rs        connexion Okta IDX (§2.1), refus d'identifiants distingué
     api.rs         appels, fenêtres de 365 jours, reprises, expiration de session (§2.2)
@@ -198,7 +200,7 @@ Un `Makefile` comme point d'entrée unique, sans outil à installer en plus de R
 | `make cover` | couverture avec `cargo llvm-cov`, rapport HTML |
 | `make ha-up` / `make ha-down` | démarre ou arrête un Home Assistant jetable en conteneur (port 8124), initialisé par script avec un utilisateur et un jeton de test |
 | `make test-ha` | essais d'import réels contre ce Home Assistant jetable |
-| `make dev` | lance `ha-gazpar once` contre le faux serveur GRDF et le Home Assistant jetable : toute la chaîne, sans toucher au vrai compte GRDF |
+| `make dev` | lance `ha-gazpar check` et `once` (niveaux `info` et `debug`), puis une panne de chaque famille, contre les faux serveurs GRDF et Home Assistant : toute la chaîne et ses messages, sans toucher au vrai compte GRDF |
 | `make image` | construit l'image arm64 et amd64 en local et affiche sa taille |
 | `make deps` | régénère `DEPENDENCIES.md` |
 

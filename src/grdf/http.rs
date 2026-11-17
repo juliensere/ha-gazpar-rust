@@ -21,14 +21,23 @@
 //! Le suivi des redirections est testé avec un faux transport ; le
 //! transport `ureq` est mince et testé contre un serveur local.
 //!
-//! Aucune adresse complète (sa requête peut porter un jeton), aucun cookie
-//! ni corps de requête n'apparaît dans un journal ou une erreur.
+//! Aucune adresse complète (sa requête peut porter un jeton), aucune valeur
+//! de cookie ni aucun corps n'apparaît dans un journal ou une erreur.
+//!
+//! Journal de diagnostic (niveau `debug`), une ligne par événement :
+//!
+//! - chaque requête : méthode, hôte:port, chemin sans requête, statut (ou
+//!   cause de l'échec), durée, **noms** des cookies envoyés ;
+//! - chaque redirection suivie : statut, hôte:port et chemin visés, rang du
+//!   saut ;
+//! - chaque `Set-Cookie` : nom, domaine (hôte seul ou sous-domaines),
+//!   chemin, ou motif du refus ([`super::cookies::Stored`]).
 //!
 //! Dépendances : `ureq`, `jiff`, `serde_json`, `error`, `log`,
 //! `url`, `grdf::cookies`.
 
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use jiff::Timestamp;
 
@@ -154,6 +163,38 @@ impl HostRule {
 pub enum Method {
     Get,
     Post,
+}
+
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Method::Get => "GET",
+            Method::Post => "POST",
+        })
+    }
+}
+
+/// Longueur maximale d'un chemin repris dans le journal.
+const MAX_LOGGED_PATH: usize = 120;
+
+/// Hôte, port et chemin d'une adresse, sans la requête : forme journalisée.
+fn logged(url: &Url) -> String {
+    let path: String = url.path().chars().take(MAX_LOGGED_PATH).collect();
+    format!("{}{path}", url.host_port())
+}
+
+/// Noms des cookies d'un en-tête `Cookie` (« DT, ln »), sans les valeurs.
+fn cookie_names(header: Option<&str>) -> String {
+    let names: Vec<&str> = header
+        .unwrap_or_default()
+        .split("; ")
+        .filter_map(|pair| pair.split_once('=').map(|(name, _)| name))
+        .collect();
+    if names.is_empty() {
+        "aucun".to_owned()
+    } else {
+        names.join(", ")
+    }
 }
 
 /// Réponse finale, après les redirections.
@@ -311,7 +352,9 @@ impl HttpClient {
             // Avant tout envoi, cookies compris.
             self.allowed.check(&url, hop > 0)?;
             let mut sent = headers.clone();
-            if let Some(cookie) = self.jar.header(&url, Timestamp::now()) {
+            let cookie = self.jar.header(&url, Timestamp::now());
+            let cookies_sent = cookie_names(cookie.as_deref());
+            if let Some(cookie) = cookie {
                 sent.push(("Cookie".to_owned(), cookie));
             }
             let request = RawRequest {
@@ -320,7 +363,9 @@ impl HttpClient {
                 headers: sent,
                 body,
             };
-            let raw = self.transport.send(&request)?;
+            let started = Instant::now();
+            let outcome = self.transport.send(&request);
+            let elapsed = started.elapsed().as_millis();
             let RawRequest {
                 url: sent_url,
                 body: sent_body,
@@ -328,11 +373,27 @@ impl HttpClient {
             } = request;
             url = sent_url;
             body = sent_body;
-            debug!("HTTP {method:?} {} → {}", url.redacted(), raw.status);
+            let raw = match outcome {
+                Ok(raw) => raw,
+                Err(e) => {
+                    debug!(
+                        "GRDF : {method} {} → échec en {elapsed} ms : {e} (cookies envoyés : \
+                         {cookies_sent})",
+                        logged(&url)
+                    );
+                    return Err(e);
+                }
+            };
+            debug!(
+                "GRDF : {method} {} → {} en {elapsed} ms (cookies envoyés : {cookies_sent})",
+                logged(&url),
+                raw.status
+            );
 
             let now = Timestamp::now();
             for (_, value) in raw.headers.iter().filter(|(k, _)| k == "set-cookie") {
-                self.jar.store(value, &url, now);
+                let stored = self.jar.store(value, &url, now);
+                debug!("GRDF : cookie reçu de {} : {stored}", url.host());
             }
 
             let next = next_method(raw.status, method);
@@ -353,6 +414,12 @@ impl HttpClient {
                     url.host_port()
                 ))
             })?;
+            debug!(
+                "GRDF : redirection {} vers {} (saut {}/{MAX_REDIRECTS})",
+                raw.status,
+                logged(&url),
+                hop + 1
+            );
             if next != method || raw.status == 303 {
                 body = None;
                 headers.retain(|(k, _)| !k.eq_ignore_ascii_case("content-type"));

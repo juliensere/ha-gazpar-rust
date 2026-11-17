@@ -167,6 +167,7 @@ impl GrdfClient {
             let call = Call::PceList;
             let response = self.api_get(call, &[])?;
             let pces = parse_pce_list(&response).map_err(|e| e.context(call))?;
+            debug!("{call} : {} PCE sur le compte", pces.len());
             if !pces.contains(&self.pce) {
                 let known = if pces.is_empty() {
                     "aucun".to_owned()
@@ -226,7 +227,7 @@ impl GrdfClient {
             return Ok(Vec::new());
         };
         let (from_text, to_text, pce) = (from.to_string(), to.to_string(), self.pce.clone());
-        debug!("relevés GRDF du {from_text} au {to_text}");
+        debug!("{call} : demande (dateDebut {from_text}, dateFin {to_text})");
         let response = self.api_get(
             call,
             &[
@@ -240,6 +241,7 @@ impl GrdfClient {
         for warning in &parsed.warnings {
             warn!("{call} : {warning}");
         }
+        debug!("{call} : {}", received(&parsed.readings, to));
         Ok(parsed.readings)
     }
 }
@@ -282,6 +284,31 @@ fn windows(from: Date, to: Date) -> Vec<(Date, Date)> {
         start = end;
     }
     out
+}
+
+/// Ce qu'une fenêtre a rapporté, pour le journal de diagnostic : nombre de
+/// jours, premier et dernier, et si le jour `dateFin` (`to`) figure dans la
+/// réponse (on ignore encore si GRDF l'inclut).
+fn received(readings: &[DailyReading], to: Date) -> String {
+    let first = readings.iter().map(|r| r.day).min();
+    let last = readings.iter().map(|r| r.day).max();
+    let (Some(first), Some(last)) = (first, last) else {
+        return "aucun jour reçu".to_owned();
+    };
+    let empty = readings
+        .iter()
+        .filter(|r| r.energy_kwh.is_none() && r.volume_m3.is_none())
+        .count();
+    let to_day = if readings.iter().any(|r| r.day == to) {
+        "dateFin incluse dans la réponse"
+    } else {
+        "aucun relevé pour dateFin"
+    };
+    let count = match readings.len() {
+        1 => "1 jour reçu".to_owned(),
+        n => format!("{n} jours reçus"),
+    };
+    format!("{count}, du {first} au {last}, dont {empty} sans valeur ; {to_day}")
 }
 
 /// Trie, garde un relevé par jour (celui qui a le plus de valeurs, à défaut
@@ -692,6 +719,34 @@ mod tests {
                          connexion.grdf.fr:443)"
                     .into()
             }
+        );
+    }
+
+    #[test]
+    fn received_days_are_summed_up_for_the_debug_log() {
+        let r = |day: Date, e: Option<i64>| DailyReading {
+            day,
+            energy_kwh: e.map(Quantity::from_millis),
+            volume_m3: None,
+        };
+        let to = date(2026, 11, 16);
+        assert_eq!(received(&[], to), "aucun jour reçu");
+        assert_eq!(
+            received(
+                &[
+                    r(date(2026, 11, 3), Some(1)),
+                    r(date(2026, 11, 16), None),
+                    r(date(2026, 11, 4), Some(1)),
+                ],
+                to
+            ),
+            "3 jours reçus, du 2026-11-03 au 2026-11-16, dont 1 sans valeur ; dateFin incluse \
+             dans la réponse"
+        );
+        assert_eq!(
+            received(&[r(date(2026, 11, 14), Some(1))], to),
+            "1 jour reçu, du 2026-11-14 au 2026-11-14, dont 0 sans valeur ; aucun relevé \
+             pour dateFin"
         );
     }
 

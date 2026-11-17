@@ -77,7 +77,6 @@ impl<T: Transport> Session<T> {
                     .and_then(Value::as_str)
                     .unwrap_or("inconnue")
                     .to_owned();
-                debug!("authentifié auprès de Home Assistant {ha_version}");
                 Ok(Session {
                     transport,
                     next_id: 1,
