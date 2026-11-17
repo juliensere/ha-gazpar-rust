@@ -328,3 +328,29 @@ Conséquences pour ce projet :
 - `NOTICE` : notices de copyright et texte MIT des deux projets d'origine. Une réécriture en Rust n'est pas une copie au sens strict, mais elle est faite en lisant leur code et reprendra leurs jeux d'essai : conserver les notices est la lecture prudente.
 - `README.md` : remerciements à Stéphane Senart et aux contributeurs.
 - Les fichiers repris tels quels (jeux d'essai) vont dans `tests/fixtures/pygazpar/` avec un `README` indiquant leur origine.
+
+## 14. État au 2026-11-17
+
+### Fait
+
+- Étapes 1 à 3 et 5 terminées. Étape 4 terminée contre le faux GRDF seulement. Étape 6 : préversion `2026.9.0-alpha.1` publiée (version GitHub « pre-release », image `ghcr.io/juliensere/ha-gazpar-rust:2026.9.0-alpha.1`, publique, amd64 et arm64), sans déploiement réel.
+- CI verte sur GitHub ; `make test-ha` vert contre HA 2026.9.4 et 2026.11.1.
+- Journaux retravaillés : chaque erreur nomme l'étape, la cible (hôte:port), la cause et le conseil ; niveau `debug` de diagnostic de la connexion GRDF, sans secret (manuel §7).
+
+### Premier essai réel (critère de l'étape 4)
+
+Jamais fait : aucun test ne contacte GRDF. Lancer une fois `ha-gazpar check` avec `GAZPAR_LOG_LEVEL=debug`, sans faire tourner gazpar2haws en même temps (deux connexions au compte). Points à trancher dans la sortie :
+
+| Point inconnu | Ligne de journal qui répond |
+|---|---|
+| Chaîne de redirections et domaines des cookies entre `monespace.grdf.fr` et `connexion.grdf.fr` | `GRDF : redirection … (saut k/10)`, `GRDF : cookie reçu de …` (ou motif du refus) |
+| Clés et statuts d'un refus Okta (seul un refus clair coupe GRDF jusqu'au redémarrage) | `GRDF, connexion 4/5 (mot de passe Okta) : … [clé]` ; ne pas provoquer de refus exprès |
+| `dateFin` inclusive ou non | `GRDF, relevés du … au … : … ; dateFin incluse` ou `aucun relevé pour dateFin` |
+| 429 sur les 4 fenêtres de 365 jours du premier import (`once` ou `run`, pas `check`) | `tentative k/4 échouée, débit limité par GRDF (… Retry-After …)` |
+
+Corriger le code et les jeux d'essai du faux GRDF (`tests/support/fake_grdf.rs`) selon ce qui est observé, puis vérifier l'historique de 3 ans dans le tableau de bord Énergie.
+
+### À faire
+
+- **Classification passagère/définitive** (`Error::is_transient`), deux cas relevés et laissés tels quels : un 429 ou une page HTML encore reçus après les 4 tentatives donnent `Error::Grdf`, définitif ; Home Assistant qui ferme proprement la connexion (trame close, redémarrage de HA) donne `Error::HomeAssistant`, définitif, alors qu'une coupure brutale donne `Io`, passagère. Effet limité au niveau du journal (`ERREUR` au lieu de `ATTENTION`) : le démon réessaie de toute façon au relevé suivant.
+- **Version 2026.9.0** après un essai réel concluant : renommer `## Non publié` en `## [2026.9.0] - AAAA-MM-JJ` (et rouvrir une section vide), `version = "2026.9.0"` dans `Cargo.toml`, `make check release-check`, commit, `git tag v2026.9.0 && git push origin v2026.9.0`. Seule une version finale reçoit les étiquettes `2026.9` et `latest` citées par le manuel.
