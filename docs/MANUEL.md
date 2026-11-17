@@ -314,10 +314,10 @@ Niveaux : `ERREUR`, `ATTENTION`, `INFO`, et `DEBUG` si `GAZPAR_LOG_LEVEL=debug`.
 
 | Symptôme | Cause probable | Que faire |
 |---|---|---|
-| `connexion à GRDF refusée` | mauvais identifiants, ou identifiants du fournisseur au lieu de GRDF | vérifiez-les sur monespace.grdf.fr, corrigez la configuration, puis **redémarrez** le service (voir [§9](#9-sécurité-et-protection-du-compte-grdf)) |
-| `échec de la connexion à GRDF` | le parcours de connexion de GRDF a changé ou est en panne ; ce n'est pas un refus des identifiants | réessayé automatiquement au relevé suivant ; si cela dure, consultez les tickets du projet |
-| `GRDF injoignable` | réseau ou site GRDF indisponible | réessayé automatiquement au relevé suivant |
-| `le PCE … n'est pas rattaché à ce compte GRDF` | PCE mal recopié, ou compteur non rattaché au compte | comparez avec Mon Espace GRDF |
+| `identifiants refusés par GRDF` | mauvais identifiants, ou identifiants du fournisseur au lieu de GRDF | vérifiez-les sur monespace.grdf.fr, corrigez la configuration, puis **redémarrez** le service (voir [§9](#9-sécurité-et-protection-du-compte-grdf)) |
+| `GRDF, connexion k/5 (…)` suivi d'un autre motif (`service de connexion indisponible`, `stateToken introuvable`, `réponse inattendue d'Okta`…) | le parcours de connexion de GRDF a changé ou est en panne ; ce n'est pas un refus des identifiants | réessayé automatiquement au relevé suivant ; si cela dure, consultez les tickets du projet en citant la ligne (elle ne contient aucun secret) |
+| `connexion refusée`, `pas de réponse en 60 s`, `hôte introuvable par le DNS` après `GRDF, …` | réseau ou site GRDF indisponible | réessayé automatiquement au relevé suivant |
+| `le PCE … n'est pas rattaché à ce compte GRDF` | PCE mal recopié, ou compteur non rattaché au compte | comparez avec Mon Espace GRDF et corrigez `GRDF_PCE` |
 | `Home Assistant : authentification refusée` | jeton invalide ou révoqué, ou utilisateur non administrateur | créez un nouveau jeton avec un utilisateur administrateur |
 | `Home Assistant injoignable`, ou `délai dépassé sur la connexion WebSocket` | adresse ou port faux, HA arrêté ou surchargé | vérifiez `HA_URL` (`ws://`, port 8123 en général) |
 | `HA_URL … adresse invalide` (code 2) | adresse mal écrite | corrigez `HA_URL` : `ws://hôte:port`, sans `?` ni `#` |

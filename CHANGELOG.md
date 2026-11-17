@@ -11,6 +11,11 @@ Chaque version publiée a une section dont l'en-tête est exactement `## [AAAA.M
 ### Modifications
 
 - Messages d'erreur de l'API GRDF : chaque erreur nomme l'appel (« GRDF, liste des PCE », « GRDF, relevés du 2026-10-18 au 2026-11-16 »), puis la cause en français avec l'hôte et le port visés, jamais l'adresse complète : statut HTTP, page HTML au lieu de JSON, débit limité (avec `Retry-After`), délai de connexion ou de lecture dépassé, connexion refusée, hôte introuvable par le DNS… Après les reprises, l'erreur précise « abandon après 4 tentatives ». Les préfixes techniques « HTTP : » et « API GRDF : » disparaissent. Un PCE absent du compte invite à vérifier `GRDF_PCE`.
+- Messages d'erreur de la connexion à GRDF : chaque erreur nomme l'étape (« GRDF, connexion 3/5 (identification Okta) », de 1/5 page d'accueil à 5/5 fin de connexion), le statut HTTP, l'hôte et le port qui ont répondu, et ce qu'Okta dit : textes (`messages`, à défaut `errorSummary`) entre guillemets et codes (`i18n.key`, `errorCode`) entre crochets, expurgés des secrets. Un refus des identifiants s'écrit « identifiants refusés par GRDF (…) ; vérifiez GRDF_USERNAME et GRDF_PASSWORD » ; les préfixes « connexion à GRDF refusée : », « échec de la connexion à GRDF : » et « protocole : » disparaissent.
+
+### Corrections
+
+- Un échec de l'étape du mot de passe qui n'est pas un refus (service de connexion indisponible, statut 503 ou 429, session Okta expirée) n'est plus annoncé « mot de passe refusé par GRDF » : le message dit « service de connexion indisponible », « débit limité par GRDF », « session de connexion Okta expirée » ou « réponse inattendue d'Okta ». La classification (passagère, nouvel essai au relevé suivant) est inchangée.
 
 ## [2026.9.0-alpha.1] - 2026-11-17
 

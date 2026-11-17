@@ -153,7 +153,11 @@ mod tests {
     }
 
     fn rejected() -> Error {
-        Error::GrdfCredentialsRejected("mot de passe refusé par GRDF (statut HTTP 401)".into())
+        Error::GrdfCredentialsRejected(
+            "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés par GRDF \
+             (statut HTTP 401, connexion.grdf.fr:443, Okta : « Authentication failed »)"
+                .into(),
+        )
     }
 
     #[test]
@@ -234,7 +238,9 @@ mod tests {
         let errors = host.logs(Level::Error);
         assert_eq!(errors.len(), 4, "une erreur par intervalle : {errors:?}");
         assert!(
-            errors[0].starts_with("connexion à GRDF refusée : mot de passe refusé"),
+            errors[0].starts_with(
+                "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés par GRDF"
+            ),
             "{}",
             errors[0]
         );

@@ -374,15 +374,17 @@ fn rejected_password_single_attempt_clear_message_no_secret() {
     let out = command(&["once"], &env).output().unwrap();
     let (stdout, stderr) = outputs(&out, 1);
     assert!(stdout.is_empty(), "{stdout}");
+    let login = servers.grdf.login_url().trim_start_matches("http://");
     assert!(
-        stderr.contains(
-            " ERREUR connexion à GRDF refusée : mot de passe refusé par GRDF (statut HTTP 401) \
-             : Authentication failed ; vérifiez GRDF_USERNAME et GRDF_PASSWORD"
-        ),
+        stderr.contains(&format!(
+            " ERREUR GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés par GRDF \
+             (statut HTTP 401, {login}, Okta : « Authentication failed » [errors.E0000004]) ; \
+             vérifiez GRDF_USERNAME et GRDF_PASSWORD (identifiants de Mon Espace GRDF)\n"
+        )),
         "{stderr}"
     );
     assert!(
-        stderr.contains(" DEBUG connexion 4/5"),
+        stderr.contains(" DEBUG GRDF, connexion 4/5 (mot de passe Okta)\n"),
         "niveau debug : {stderr}"
     );
     let c = servers.grdf.counters();
@@ -399,7 +401,8 @@ fn rejected_password_single_attempt_clear_message_no_secret() {
     let (stdout, stderr) = outputs(&out, 1);
     assert!(stdout.contains("Home Assistant : connecté"), "{stdout}");
     assert!(
-        stderr.contains("ha-gazpar : connexion à GRDF refusée"),
+        stderr
+            .contains("ha-gazpar : GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés"),
         "{stderr}"
     );
     assert_eq!(servers.grdf.counters().challenge, 2);
@@ -472,7 +475,10 @@ fn run_reads_at_once_and_keeps_running() {
 fn run_with_rejected_password_stays_up_after_a_single_attempt() {
     let servers = Servers::start();
     let (mut child, lines) = spawn_run(&servers.env_with_password(WRONG_PASSWORD));
-    let seen = wait_for(&lines, " ERREUR connexion à GRDF refusée");
+    let seen = wait_for(
+        &lines,
+        " ERREUR GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés",
+    );
     let journal = seen.join("\n");
     assert!(
         journal.contains("Plus aucune connexion à GRDF jusqu'au redémarrage de ha-gazpar"),

@@ -26,7 +26,8 @@
 //! vers la page de connexion), page HTML ou JSON d'erreur, connexion coupée,
 //! redirection ou `success.href` vers un autre hôte (`localhost` au lieu de
 //! `127.0.0.1`, donc toujours local si le client le suivait à tort),
-//! service de connexion indisponible (503 à `challenge/answer`).
+//! service de connexion indisponible (503 à `challenge/answer`), page de
+//! connexion sans `stateToken`.
 //! Compteurs et anomalies constatées côté serveur : [`Counters`].
 
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
@@ -93,6 +94,9 @@ pub struct Faults {
     /// Nombre de réponses 503 (page HTML) à `challenge/answer` : panne
     /// passagère du service de connexion, pas un refus d'identifiants.
     pub login_unavailable: u32,
+    /// La page de connexion ne contient pas de `stateToken` (parcours de
+    /// connexion modifié par GRDF).
+    pub no_state_token: bool,
 }
 
 /// Ce que le serveur a vu.
@@ -562,6 +566,9 @@ fn login_route(state: &mut State, request: &Request) -> Option<Reply> {
         ("GET", p) if p.starts_with("/oauth2/") => {
             state.counters.start_pages += 1;
             state.identified = false;
+            if state.faults.no_state_token {
+                return Some(Reply::html(200, "<html>Nouvelle page de connexion</html>"));
+            }
             let page = format!(
                 "<html><script>var oktaData = {{\"redirectUri\":\"x\",\"stateToken\":\"{STATE_TOKEN_IN_PAGE}\",\"x\":1}};</script></html>"
             );

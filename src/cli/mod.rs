@@ -315,6 +315,9 @@ mod tests {
     const PASSWORD: &str = "mot-de-passe-secret";
     const TOKEN: &str = "jeton-secret";
     const EMAIL: &str = "jean@example.org";
+    /// Refus d'identifiants, tel que le client GRDF le rend.
+    const REJECTED: &str = "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés par \
+                            GRDF (statut HTTP 401, connexion.grdf.fr:443)";
     /// Panne passagère de GRDF, telle que le client GRDF la rend.
     const TIMEOUT: &str = "GRDF, relevés du 2026-11-02 au 2026-11-15 : pas de réponse en 60 s \
                            (monespace.grdf.fr:443) ; abandon après 4 tentatives";
@@ -586,7 +589,7 @@ mod tests {
         );
 
         let mut connector = FakeConnector::new(Script {
-            grdf_errors: vec![Error::GrdfCredentialsRejected("mot de passe refusé".into())],
+            grdf_errors: vec![Error::GrdfCredentialsRejected(REJECTED.into())],
             ..Script::default()
         });
         let (code, out, err) =
@@ -594,7 +597,9 @@ mod tests {
         assert_eq!(code, 1);
         assert!(out.contains("Home Assistant : connecté"), "{out}");
         assert!(
-            err.contains("ha-gazpar : connexion à GRDF refusée"),
+            err.contains(&format!(
+                "ha-gazpar : {REJECTED} ; vérifiez GRDF_USERNAME et GRDF_PASSWORD"
+            )),
             "{err}"
         );
         assert_eq!(
@@ -738,7 +743,7 @@ mod tests {
     #[test]
     fn run_stops_contacting_grdf_after_rejected_credentials() {
         let mut connector = FakeConnector::new(Script {
-            grdf_errors: vec![Error::GrdfCredentialsRejected("mot de passe refusé".into())],
+            grdf_errors: vec![Error::GrdfCredentialsRejected(REJECTED.into())],
             ..Script::default()
         });
         let mut sleeps = Vec::new();

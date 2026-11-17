@@ -656,10 +656,7 @@ mod tests {
         ] {
             let e = Error::from(refused(s, Family::Http));
             let shown = format!("{e} {e:?}");
-            assert!(
-                shown.starts_with("protocole : adresse invalide : "),
-                "{shown}"
-            );
+            assert!(shown.starts_with("adresse invalide : "), "{shown}");
             assert!(!shown.contains("secret"), "{shown}");
         }
     }

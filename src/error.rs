@@ -172,15 +172,13 @@ impl fmt::Display for Error {
             Error::Usage(m) => write!(f, "usage incorrect : {m}"),
             Error::Io(m) => write!(f, "entrée-sortie : {m}"),
             // Le message nomme déjà le service et l'opération (contexte).
-            Error::Http(m) | Error::Grdf(m) => f.write_str(m),
-            Error::GrdfLogin(m) => write!(f, "échec de la connexion à GRDF : {m}"),
+            Error::Http(m) | Error::Grdf(m) | Error::Protocol(m) => f.write_str(m),
+            Error::GrdfLogin(m) => f.write_str(m),
             Error::GrdfCredentialsRejected(m) => write!(
                 f,
-                "connexion à GRDF refusée : {m} ; vérifiez GRDF_USERNAME et GRDF_PASSWORD \
-                 (identifiants de Mon Espace GRDF)"
+                "{m} ; vérifiez GRDF_USERNAME et GRDF_PASSWORD (identifiants de Mon Espace GRDF)"
             ),
             Error::HomeAssistant(m) => write!(f, "Home Assistant : {m}"),
-            Error::Protocol(m) => write!(f, "protocole : {m}"),
             Error::Invalid(m) => write!(f, "valeur invalide : {m}"),
         }
     }
@@ -209,15 +207,21 @@ mod tests {
     }
 
     #[test]
-    fn display_is_french_and_prefixed() {
+    fn display_is_the_message_with_its_advice() {
+        // Le message nomme le service et l'étape (contexte) : pas de préfixe.
+        let login = "GRDF, connexion 1/5 (page d'accueil) : service indisponible \
+                     (statut HTTP 503, monespace.grdf.fr:443)";
+        assert_eq!(Error::GrdfLogin(login.into()).to_string(), login);
+        let http = "GRDF, liste des PCE : pas de réponse en 60 s (monespace.grdf.fr:443)";
+        assert_eq!(Error::Http(http.into()).to_string(), http);
+        // Refus d'identifiants : le message, puis ce qu'il faut faire.
         assert_eq!(
-            Error::GrdfLogin("page d'accueil : statut HTTP 503".into()).to_string(),
-            "échec de la connexion à GRDF : page d'accueil : statut HTTP 503"
-        );
-        assert_eq!(
-            Error::GrdfCredentialsRejected("mot de passe refusé".into()).to_string(),
-            "connexion à GRDF refusée : mot de passe refusé ; vérifiez GRDF_USERNAME et \
-             GRDF_PASSWORD (identifiants de Mon Espace GRDF)"
+            Error::GrdfCredentialsRejected(
+                "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés".into()
+            )
+            .to_string(),
+            "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés ; vérifiez \
+             GRDF_USERNAME et GRDF_PASSWORD (identifiants de Mon Espace GRDF)"
         );
         assert_eq!(
             Error::HomeAssistant("x".into()).to_string(),

@@ -113,12 +113,16 @@ fn wrong_password_is_a_clear_error_after_a_single_attempt() {
     let (mut grdf, sleeps) = client_for(&fake, PCE, "mauvais-mot-de-passe");
     let e = grdf.daily_readings(FROM, TO).unwrap_err();
 
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés par GRDF \
+             (statut HTTP 401, {}, Okta : « Authentication failed » [errors.E0000004]) ; \
+             vérifiez GRDF_USERNAME et GRDF_PASSWORD (identifiants de Mon Espace GRDF)",
+            host_port(fake.login_url())
+        )
+    );
     assert!(matches!(e, Error::GrdfCredentialsRejected(_)), "{e:?}");
-    let shown = e.to_string();
-    assert!(shown.starts_with("connexion à GRDF refusée : "), "{shown}");
-    assert!(shown.contains("mot de passe refusé"), "{shown}");
-    assert!(shown.contains("Authentication failed"), "{shown}");
-    assert!(shown.contains("401"), "{shown}");
     for secret in [EMAIL, "mauvais-mot-de-passe", STATE_HANDLE, STATE_TOKEN] {
         assert!(!format!("{e} {e:?}").contains(secret), "{secret}");
     }
@@ -139,13 +143,13 @@ fn unavailable_login_service_is_not_a_credentials_rejection() {
     });
     let (mut grdf, sleeps) = client(&fake);
     let e = grdf.daily_readings(FROM, TO).unwrap_err();
-    assert!(
-        matches!(&e, Error::GrdfLogin(m) if m.contains("statut HTTP 503")),
-        "{e:?}"
-    );
-    assert!(
-        e.to_string().starts_with("échec de la connexion à GRDF"),
-        "{e}"
+    assert_eq!(
+        e,
+        Error::GrdfLogin(format!(
+            "GRDF, connexion 4/5 (mot de passe Okta) : service de connexion indisponible \
+             (statut HTTP 503, page HTML, {}, Okta : aucun motif donné)",
+            host_port(fake.login_url())
+        ))
     );
     let c = fake.counters();
     assert_eq!((c.identify, c.challenge, c.logins), (1, 1, 0));
@@ -154,6 +158,56 @@ fn unavailable_login_service_is_not_a_credentials_rejection() {
     // Le relevé suivant se connecte normalement.
     assert_eq!(grdf.daily_readings(FROM, TO).unwrap().len(), 28);
     assert_eq!(fake.counters().logins, 1);
+}
+
+#[test]
+fn login_page_without_state_token_names_the_step_and_the_page() {
+    let fake = FakeGrdf::start();
+    fake.set_faults(Faults {
+        no_state_token: true,
+        ..Faults::default()
+    });
+    let (mut grdf, _) = client(&fake);
+    let e = grdf.daily_readings(FROM, TO).unwrap_err();
+    assert_eq!(
+        e,
+        Error::GrdfLogin(format!(
+            "GRDF, connexion 1/5 (page d'accueil) : jeton « stateToken » introuvable dans la \
+             page reçue (statut HTTP 200, page HTML, {}) : le parcours de connexion de GRDF a \
+             peut-être changé",
+            host_port(fake.login_url())
+        ))
+    );
+    assert!(!e.is_transient());
+    assert_eq!(fake.counters().identify, 0);
+}
+
+#[test]
+fn unreachable_grdf_names_the_login_step_and_the_target() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let closed = format!("http://127.0.0.1:{port}");
+    let settings = GrdfSettings {
+        base_url: closed.clone(),
+        login_url: closed,
+        credentials: Credentials {
+            username: Secret::new(EMAIL),
+            password: Secret::new(PASSWORD),
+        },
+        pce: PCE.to_owned(),
+    };
+    let mut grdf = GrdfClient::new(settings, Box::new(|_| panic!("pas d'attente"))).unwrap();
+    let e = grdf.daily_readings(FROM, TO).unwrap_err();
+    assert_eq!(
+        e,
+        Error::Http(format!(
+            "GRDF, connexion 1/5 (page d'accueil) : connexion refusée (127.0.0.1:{port})"
+        ))
+    );
+    assert!(e.is_transient());
 }
 
 #[test]
@@ -377,7 +431,9 @@ fn redirect_to_another_host_is_refused_without_following_it() {
     assert_eq!(
         e,
         Error::Protocol(
-            "redirection vers l'hôte localhost refusée : seuls 127.0.0.1 sont autorisés".into()
+            "GRDF, connexion 1/5 (page d'accueil) : redirection vers l'hôte localhost refusée : \
+             seuls 127.0.0.1 sont autorisés"
+                .into()
         )
     );
     let c = fake.counters();
@@ -481,16 +537,18 @@ fn secrets_never_reach_logs_or_errors() {
     assert!(out.status.success(), "{text}");
     // Le journal a bien été capturé, au niveau debug, avec les erreurs.
     for expected in [
-        " DEBUG connexion 4/5",
+        " DEBUG GRDF, connexion 4/5 (mot de passe Okta)",
         " INFO connecté à Mon Espace GRDF",
         " ATTENTION GRDF, relevés du 2021-07-26 au 2021-08-22 : session GRDF expirée",
         " ATTENTION GRDF, relevés du 2021-07-26 au 2021-08-22 : débit limité par GRDF",
         "ERREUR mot de passe",
         "ERREUR session",
         "ERREUR pce",
-        "ERREUR hôte : protocole : redirection vers l'hôte localhost refusée",
-        "ERREUR hôte : échec de la connexion à GRDF : fin de connexion : success.href",
-        "ERREUR mot de passe : connexion à GRDF refusée : mot de passe refusé",
+        "ERREUR hôte : GRDF, connexion 1/5 (page d'accueil) : redirection vers l'hôte \
+         localhost refusée",
+        "ERREUR hôte : GRDF, connexion 5/5 (fin de connexion) : success.href mène à l'hôte \
+         localhost",
+        "ERREUR mot de passe : GRDF, connexion 4/5 (mot de passe Okta) : identifiants refusés",
     ] {
         assert!(text.contains(expected), "« {expected} » absent :\n{text}");
     }
